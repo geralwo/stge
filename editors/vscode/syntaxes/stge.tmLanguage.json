@@ -1,0 +1,243 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "STGE",
+  "scopeName": "source.stge",
+  "patterns": [
+    { "include": "#comment" },
+    { "include": "#string" },
+    { "include": "#char" },
+    { "include": "#number" },
+    { "include": "#keyword" },
+    { "include": "#builtin-type" },
+    { "include": "#function-definition" },
+    { "include": "#type-definition" },
+    { "include": "#path" },
+    { "include": "#member-access" },
+    { "include": "#function-call" },
+    { "include": "#constant" },
+    { "include": "#operator" },
+    { "include": "#punctuation" },
+    { "include": "#identifier" }
+  ],
+  "repository": {
+    "comment": {
+      "name": "comment.line.double-slash.stge",
+      "begin": "//",
+      "end": "$"
+    },
+    "string": {
+      "name": "string.quoted.double.stge",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.stge",
+          "match": "\\\\(n|t|r|[\\\\\"'$e]|x[0-9A-Fa-f]{2})"
+        },
+        {
+          "name": "meta.interpolation.stge",
+          "begin": "\\$\\{",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.begin.stge" }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.end.stge" }
+          },
+          "patterns": [
+            { "include": "$self" }
+          ]
+        }
+      ]
+    },
+    "char": {
+      "name": "string.quoted.single.stge",
+      "match": "'([^'\\\\]|\\\\.)'"
+    },
+    "number": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.stge",
+          "match": "\\b\\d+\\.\\d+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.stge",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "keyword": {
+      "patterns": [
+        {
+          "name": "keyword.control.stge",
+          "match": "\\b(if|else|while|return|and|or|not)\\b"
+        },
+        {
+          "name": "keyword.other.stge",
+          "match": "\\b(use|enum|extern|self|color)\\b"
+        }
+      ]
+    },
+    "builtin-type": {
+      "name": "support.type.stge",
+      "match": "\\b(int|uint|byte|float|double|String|object|vec2i|Input|Terminal|Color|Key)\\b"
+    },
+    "function-definition": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)(\\+=|-=|\\*=|/=|[A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "entity.name.function.stge" },
+            "4": { "name": "keyword.operator.assignment.stge" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\.)([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "entity.name.function.stge" },
+            "4": { "name": "keyword.operator.assignment.stge" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(?=\\()",
+          "captures": {
+            "1": { "name": "entity.name.function.stge" },
+            "2": { "name": "keyword.operator.assignment.stge" }
+          }
+        }
+      ]
+    },
+    "type-definition": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(?=(\\{\\}|\\{|enum\\b|[A-Za-z_][A-Za-z0-9_]*\\s*\\[|\\[))",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "keyword.operator.assignment.stge" }
+          }
+        }
+      ]
+    },
+    "path": {
+      "patterns": [
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)(\\+=|-=|\\*=|/=)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "entity.name.function.stge" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "entity.name.function.stge" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Z][A-Z0-9_]+)\\b",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "constant.other.stge" }
+          }
+        },
+        {
+          "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(::)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "entity.name.type.stge" },
+            "2": { "name": "punctuation.accessor.stge" },
+            "3": { "name": "variable.other.member.stge" }
+          }
+        }
+      ]
+    },
+    "member-access": {
+      "patterns": [
+        {
+          "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+          "captures": {
+            "1": { "name": "punctuation.accessor.stge" },
+            "2": { "name": "entity.name.function.stge" }
+          }
+        },
+        {
+          "match": "(\\.)([A-Z][A-Z0-9_]+)\\b",
+          "captures": {
+            "1": { "name": "punctuation.accessor.stge" },
+            "2": { "name": "constant.other.stge" }
+          }
+        },
+        {
+          "match": "(\\.)([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "punctuation.accessor.stge" },
+            "2": { "name": "variable.other.member.stge" }
+          }
+        }
+      ]
+    },
+    "function-call": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_]*)(?=\\s*\\()",
+      "name": "entity.name.function.stge"
+    },
+    "constant": {
+      "name": "constant.other.stge",
+      "match": "\\b[A-Z][A-Z0-9_]+\\b"
+    },
+    "operator": {
+      "patterns": [
+        {
+          "name": "keyword.operator.arrow.stge",
+          "match": "->"
+        },
+        {
+          "name": "keyword.operator.assignment.stge",
+          "match": "(\\+=|-=|\\*=|/=|=)"
+        },
+        {
+          "name": "keyword.operator.comparison.stge",
+          "match": "(==|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.stge",
+          "match": "[+\\-*/]"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "punctuation.accessor.stge",
+          "match": "(::|\\.)"
+        },
+        {
+          "name": "punctuation.section.parens.stge",
+          "match": "[()]"
+        },
+        {
+          "name": "punctuation.section.braces.stge",
+          "match": "[{}]"
+        },
+        {
+          "name": "punctuation.section.brackets.stge",
+          "match": "[\\[\\]]"
+        },
+        {
+          "name": "punctuation.separator.comma.stge",
+          "match": ","
+        }
+      ]
+    },
+    "identifier": {
+      "name": "variable.other.stge",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+    }
+  }
+}

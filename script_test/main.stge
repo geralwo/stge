@@ -1,0 +1,41 @@
+use "test_object.stge"
+Terminal::print(1337.to_str())
+Terminal::print("\n")
+test_num = 23
+Terminal::print(test_num.to_str())
+Terminal::print("\n")
+Terminal::print("Hello World\n")
+test_quit = 0
+
+player = {
+    player.up = Input::Key.KEY_W
+    player.down = Input::Key.KEY_S
+    player.left = Input::Key.KEY_A
+    player.right = Input::Key.KEY_D
+    player.exit = Input::Key.KEY_Q
+    player.move = () {
+        if Input::is_key_pressed(player.up) {
+            Terminal::print("Up\n")
+        }
+        if Input::is_key_pressed(player.down) {
+            Terminal::print("Down\n")
+        }
+        if Input::is_key_pressed(player.left) {
+            Terminal::print("Left\n")
+        }
+        if Input::is_key_pressed(player.right) {
+            Terminal::print("Right\n")
+        }
+        if Input::is_key_pressed(player.exit) {
+            Terminal::print("Exit ${int::to_str(test_quit)}\n")
+            test_quit = 6666
+            Terminal::print("Exit ${int::to_str(test_quit)}\n")
+        }
+    }
+}
+
+
+while not test_quit {
+    Input::poll()
+    player.move()
+}

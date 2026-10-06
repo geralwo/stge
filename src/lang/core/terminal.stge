@@ -1,0 +1,63 @@
+Terminal = {}
+Terminal::stdin = int(0)
+Terminal::stdout = int(1)
+Terminal::stderr = int(2)
+
+Terminal::Color = enum {
+  DEFAULT = -1
+  BLACK
+  RED
+  GREEN
+  YELLOW
+  BLUE
+  MAGENTA
+  CYAN
+  WHITE
+  LIGHTBLACK
+  LIGHTRED
+  LIGHTGREEN
+  LIGHTYELLOW
+  LIGHTBLUE
+  LIGHTMAGENTA
+  LIGHTCYAN
+  LIGHTWHITE
+}
+
+Terminal::print = (String s) {
+  std::write(Terminal::stdout, s.buffer, s.length)
+}
+
+Terminal::fg_code = (Terminal::Color c) -> int {
+  if c == Terminal::Color.DEFAULT {
+    return 39
+  }
+  if c > 7 {
+    return 90 + c - 8
+  }
+  return 30 + c
+}
+
+Terminal::bg_code = (Terminal::Color c) -> int {
+  if c == Terminal::Color.DEFAULT {
+    return 49
+  }
+  if c > 7 {
+    return 100 + c - 8
+  }
+  return 40 + c
+}
+
+Terminal::printc = (String s, Terminal::Color fg, Terminal::Color bg) {
+  fgc = Terminal::fg_code(fg)
+  bgc = Terminal::bg_code(bg)
+  Terminal::print("\e[${fgc};${bgc}m")
+  Terminal::print(s)
+  Terminal::print("\e[0m")
+}
+
+Terminal::print_at = (int x, int y, String s) {
+  row = y + 1
+  col = x + 1
+  Terminal::print("\e[${row};${col}H")
+  Terminal::print(s)
+}

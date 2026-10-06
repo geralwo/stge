@@ -1,0 +1,10 @@
+src/main.c
+src/core/screen.c
+src/core/obj.c
+src/core/stge.c
+src/core/stge_string.c
+src/core/native.c
+src/core/input.c
+src/core/vm.c
+src/parser/parser.c
+src/utils/dyn.c

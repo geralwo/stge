@@ -1,0 +1,11 @@
+int = byte[4]
+int::new = (int n) -> int {
+  return n
+}
+int::new = (uint u) -> int {
+  return u
+}
+int::to_str = extern stge_int_to_str(int n) -> String
+int.to_str = (int) -> String {
+  return int::to_str(int)
+}

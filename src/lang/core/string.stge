@@ -1,0 +1,18 @@
+String = {
+  String.length = uint(0)
+  String.buffer = byte[]
+}
+
+String::new = () -> String {
+  String.length = uint(0)
+  String.buffer = byte[]
+}
+
+String::concat = extern stge_string_concat(String a, String b) -> String
+
+String::to_str = (object o) -> String {
+  return o.to_str()
+}
+String.to_str = () -> String {
+  return String
+}

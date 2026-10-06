@@ -1,0 +1,2 @@
+std = {}
+std::write = extern stge_write(int fd, byte[] buf, uint count)

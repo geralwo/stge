@@ -1,0 +1,8 @@
+T = {}
+T::new = () {
+    T.m = () {
+        Terminal::print("m\n")
+    }
+}
+// Call T.m at top level WITHOUT ever constructing - method was only "assigned" in new body
+T.m()

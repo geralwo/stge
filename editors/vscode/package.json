@@ -1,0 +1,35 @@
+{
+  "name": "stge-language",
+  "displayName": "STGE",
+  "description": "Syntax highlighting for STGE (.stge) scripts",
+  "version": "0.0.2",
+  "publisher": "stge",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "stge",
+        "aliases": [
+          "STGE",
+          "stge"
+        ],
+        "extensions": [
+          ".stge"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "stge",
+        "scopeName": "source.stge",
+        "path": "./syntaxes/stge.tmLanguage.json"
+      }
+    ]
+  }
+}

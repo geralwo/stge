@@ -1,0 +1,11 @@
+test_object = {}
+test_object::new = ()
+{
+    test_object.num = int(66)
+    test_object.say_hello = () {
+        Terminal::print("hello!\n")
+        Terminal::print(int::to_str(test_object.num))
+        Terminal::print("\n")
+        test_object.num += 1
+    }
+}

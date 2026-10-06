@@ -1,0 +1,62 @@
+//vec2i
+//vec3i
+//vec2
+//vec3
+use "string.stge"
+
+vec2i = int[2] {
+  vec2i.x = vec2i[0]
+  vec2i.y = vec2i[1]
+}
+
+
+vec2i::new = () -> vec2i {
+  vec2i.x = int()
+  vec2i.y = int()
+}
+vec2i::new = (int x, int y) -> vec2i {
+  vec2i.x = x
+  vec2i.y = y
+}
+vec2i::+= = (vec2i a, vec2i b) -> vec2i {
+  a.x += b.x
+  a.y += b.y
+  return a
+}
+vec2i::-= = (vec2i a, vec2i b) -> vec2i {
+  a.x -= b.x
+  a.y -= b.y
+  return a
+}
+vec2i::*= = (vec2i a, vec2i b) -> vec2i {
+  a.x *= b.x
+  a.y *= b.y
+  return a
+}
+vec2i::/= = (vec2i a, vec2i b) -> vec2i {
+  a.x /= b.x
+  a.y /= b.y
+  return a
+}
+vec2i::to_str = (vec2i a) -> String {
+  xs = int::to_str(a.x)
+  ys = int::to_str(a.y)
+  out = String()
+  i = int(0)
+  while i < xs.length {
+    out.buffer.append(xs.buffer[i])
+    out.length += 1
+    i += 1
+  }
+  out.buffer.append(byte(44))
+  out.length += 1
+  out.buffer.append(byte(32))
+  out.length += 1
+  i = int(0)
+  while i < ys.length {
+    out.buffer.append(ys.buffer[i])
+    out.length += 1
+    i += 1
+  }
+  return out
+}
