@@ -32,7 +32,6 @@ player = {
     }
 }
 
-
 while not test_quit {
     Terminal::clear()
     Input::poll()
