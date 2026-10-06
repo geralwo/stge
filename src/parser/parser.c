@@ -12,14 +12,10 @@
 #include "parser/ast.h"
 #include "parser/parser.h"
 
-#define STGE_MAX_NS 32
-#define STGE_MAX_INCLUDE 8
-#define STGE_MAX_PATH 8
-#define STGE_MAX_FIELD_KINDS 32
-#define STGE_MAX_CONST 128
-#define STGE_MAX_CALL_PATCH 32
-#define STGE_MAX_PACKED 16
-#define STGE_MAX_ALIASES 8
+/* Stack scratch for temporary paths during compile; persistent
+   names use Comp name_pool / heap Obj strings (no 32-char cap). */
+#define STGE_NAME_MAX 4096
+
 
 typedef enum
 {
@@ -44,11 +40,11 @@ typedef enum
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	FieldKind kind;
 	int32_t arr_len; /* n for T[n], -1 for T[], 1 for scalar */
 	bool growable;
-	char type[STGE_NAME_MAX];
+	char *type;
 } FieldType;
 
 /* ---- tokens ---------------------------------------------------------- */
@@ -103,8 +99,6 @@ typedef struct
 	bool closes_str; /* '}' ends a ${ ... } hole */
 } Tok;
 
-#define STGE_MAX_INTERP 8
-
 typedef struct
 {
 	const char *src;
@@ -113,7 +107,8 @@ typedef struct
 	int line;
 	bool cont_string;
 	int interp_sp;
-	int interp_depth[STGE_MAX_INTERP];
+	int *interp_depth;
+	int interp_cap;
 	char *buf;
 	size_t buf_cap;
 	size_t buf_len;
@@ -166,6 +161,22 @@ static bool lex_buf_push(Lex *lex, char ch)
 
 	lex->buf[lex->buf_len++] = ch;
 	lex->buf[lex->buf_len] = '\0';
+	return true;
+}
+
+static bool ensure_interp_cap(Lex *lex)
+{
+	int *grown;
+	int ncap;
+
+	if (lex->interp_sp < lex->interp_cap)
+		return true;
+	ncap = lex->interp_cap > 0 ? lex->interp_cap * 2 : 8;
+	grown = realloc(lex->interp_depth, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	lex->interp_depth = grown;
+	lex->interp_cap = ncap;
 	return true;
 }
 
@@ -265,7 +276,20 @@ static Lex lex_probe(const Lex *src)
 	lex.line = src->line;
 	lex.cont_string = src->cont_string;
 	lex.interp_sp = src->interp_sp;
-	memcpy(lex.interp_depth, src->interp_depth, sizeof lex.interp_depth);
+	lex.interp_depth = NULL;
+	lex.interp_cap = 0;
+	if (src->interp_sp > 0 && src->interp_depth != NULL)
+	{
+		lex.interp_depth = malloc((size_t)src->interp_sp * sizeof *lex.interp_depth);
+		if (lex.interp_depth != NULL)
+		{
+			memcpy(lex.interp_depth, src->interp_depth,
+			       (size_t)src->interp_sp * sizeof *lex.interp_depth);
+			lex.interp_cap = src->interp_sp;
+		}
+		else
+			lex.interp_sp = 0;
+	}
 	return lex;
 }
 
@@ -278,6 +302,10 @@ static void lex_probe_free(Lex *lex)
 	lex->buf = NULL;
 	lex->buf_cap = 0;
 	lex->buf_len = 0;
+	free(lex->interp_depth);
+	lex->interp_depth = NULL;
+	lex->interp_cap = 0;
+	lex->interp_sp = 0;
 	lex_persist_free(lex);
 }
 
@@ -491,7 +519,7 @@ static Tok lex_string(Lex *lex, char quote)
 		else if (quote == '"' && ch == '$' && peek(lex) == '{')
 		{
 			next(lex);
-			if (lex->interp_sp >= STGE_MAX_INTERP)
+			if (!ensure_interp_cap(lex))
 			{
 				tok.kind = TOK_BAD;
 				return tok;
@@ -762,47 +790,50 @@ static Tok lex_tok(Lex *lex)
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	int id;
 	ObjFn *fns;
 	int fn_count;
 	int fns_cap;
-	FieldType fields[STGE_MAX_FIELD_KINDS];
+	FieldType *fields;
 	int field_count;
+	int fields_cap;
 	bool type_bound; /* claimed by compile Name = {} / packed / enum / extern */
 } NodeRef;
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	int32_t value;
 } NsConst;
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	int obj_id;
 	ObjFn *fns;
 	int fn_count;
 	int fns_cap;
-	NsConst consts[STGE_MAX_CONST];
+	NsConst *consts;
 	int const_count;
+	int consts_cap;
 } NsRef;
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	int32_t index;
 } PackedAlias;
 
 typedef struct
 {
-	char name[STGE_NAME_MAX];
-	char elem[STGE_NAME_MAX];
+	char *name;
+	char *elem;
 	int32_t len;
 	FieldKind elem_kind;
-	PackedAlias aliases[STGE_MAX_ALIASES];
+	PackedAlias *aliases;
 	int alias_count;
+	int aliases_cap;
 } PackedType;
 
 typedef struct
@@ -816,41 +847,156 @@ typedef struct
 	int nodes_cap;
 	int spawn_count;
 
-	NsRef nss[STGE_MAX_NS];
+	NsRef *nss;
 	int ns_count;
-	PackedType packed[STGE_MAX_PACKED];
+	int nss_cap;
+	PackedType *packed;
 	int packed_count;
+	int packed_cap;
 
 	int self;
-	char param[STGE_NAME_MAX];
-	char param_type[STGE_NAME_MAX];
+	char *param;
+	char *param_type;
 	bool has_param;
-	char (*locals)[STGE_NAME_MAX];
+	char **locals;
 	bool *local_growable;
 	int local_count;
 	int locals_cap;
-	char (*slot_names)[STGE_NAME_MAX];
+	char **slot_names;
 	FieldKind *slot_kinds;
-	char (*slot_types)[STGE_NAME_MAX];
+	char **slot_types;
 	int slot_count;
 	int slots_cap;
 	int fn_argc;
 	int fn_self_param;
-	char fn_ret_type[STGE_NAME_MAX];
-	size_t call_patch_at[STGE_MAX_CALL_PATCH];
-	int call_patch_obj[STGE_MAX_CALL_PATCH];
-	char call_patch_fn[STGE_MAX_CALL_PATCH][STGE_NAME_MAX];
+	char *fn_ret_type;
+	size_t *call_patch_at;
+	int *call_patch_obj;
+	char **call_patch_fn;
 	int call_patch_count;
+	int call_patch_cap;
 	bool file_add_child;
+	char **include_stack;
 	int include_depth;
+	int include_cap;
 	bool failed;
 	ExprKind expr_kind;
-	char last_ret_type[STGE_NAME_MAX];
-	AstUse used[STGE_MAX_USE];
+	char *last_ret_type;
+	AstUse *used;
 	int used_count;
+	int used_cap;
 	char *name_scratch;
 	size_t name_scratch_cap;
+	char **name_pool;
+	int name_pool_count;
+	int name_pool_cap;
 } Comp;
+
+static char *comp_pool_add(Comp *c, const char *s, size_t n)
+{
+	char *copy;
+	char **grown;
+	int ncap;
+
+	if (c == NULL)
+		return NULL;
+	if (s == NULL)
+	{
+		s = "";
+		n = 0;
+	}
+	copy = malloc(n + 1);
+	if (copy == NULL)
+		return NULL;
+	memcpy(copy, s, n);
+	copy[n] = '\0';
+	if (c->name_pool_count >= c->name_pool_cap)
+	{
+		ncap = c->name_pool_cap > 0 ? c->name_pool_cap * 2 : 64;
+		grown = realloc(c->name_pool, (size_t)ncap * sizeof *grown);
+		if (grown == NULL)
+		{
+			free(copy);
+			return NULL;
+		}
+		c->name_pool = grown;
+		c->name_pool_cap = ncap;
+	}
+	c->name_pool[c->name_pool_count++] = copy;
+	return copy;
+}
+
+static char *comp_strdup(Comp *c, const char *s)
+{
+	if (s == NULL)
+		s = "";
+	return comp_pool_add(c, s, strlen(s));
+}
+
+static char *comp_tok_name(Comp *c, const Tok *tok)
+{
+	if (tok == NULL || tok->text == NULL)
+		return comp_strdup(c, "");
+	return comp_pool_add(c, tok->text, tok->len);
+}
+
+static void set_str(char **dst, Comp *c, const char *s)
+{
+	if (dst == NULL)
+		return;
+	*dst = comp_strdup(c, s != NULL ? s : "");
+}
+
+static char *xstrdup(const char *s)
+{
+	size_t n;
+	char *out;
+
+	if (s == NULL)
+		s = "";
+	n = strlen(s) + 1;
+	out = malloc(n);
+	if (out == NULL)
+		return NULL;
+	memcpy(out, s, n);
+	return out;
+}
+
+static void objfn_set_name(ObjFn *fn, const char *name)
+{
+	char *copy;
+
+	if (fn == NULL)
+		return;
+	copy = xstrdup(name != NULL ? name : "");
+	free(fn->name);
+	fn->name = copy;
+}
+
+static void objfn_set_ret(ObjFn *fn, const char *ret)
+{
+	char *copy;
+
+	if (fn == NULL)
+		return;
+	copy = xstrdup(ret != NULL ? ret : "");
+	free(fn->ret_type);
+	fn->ret_type = copy;
+}
+
+static void free_objfns(ObjFn *fns, int count)
+{
+	int i;
+
+	if (fns == NULL)
+		return;
+	for (i = 0; i < count; i++)
+	{
+		free(fns[i].name);
+		free(fns[i].ret_type);
+	}
+	free(fns);
+}
 
 static bool ensure_fns_cap(ObjFn **fns, int *count, int *cap)
 {
@@ -885,6 +1031,148 @@ static bool ensure_nodes_cap(Comp *c)
 	memset(grown + c->nodes_cap, 0, (size_t)(ncap - c->nodes_cap) * sizeof *grown);
 	c->nodes = grown;
 	c->nodes_cap = ncap;
+	return true;
+}
+
+static bool ensure_nss_cap(Comp *c)
+{
+	NsRef *grown;
+	int ncap;
+
+	if (c->ns_count < c->nss_cap)
+		return true;
+	ncap = c->nss_cap > 0 ? c->nss_cap * 2 : 8;
+	grown = realloc(c->nss, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + c->nss_cap, 0, (size_t)(ncap - c->nss_cap) * sizeof *grown);
+	c->nss = grown;
+	c->nss_cap = ncap;
+	return true;
+}
+
+static bool ensure_packed_cap(Comp *c)
+{
+	PackedType *grown;
+	int ncap;
+
+	if (c->packed_count < c->packed_cap)
+		return true;
+	ncap = c->packed_cap > 0 ? c->packed_cap * 2 : 8;
+	grown = realloc(c->packed, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + c->packed_cap, 0, (size_t)(ncap - c->packed_cap) * sizeof *grown);
+	c->packed = grown;
+	c->packed_cap = ncap;
+	return true;
+}
+
+static bool ensure_fields_cap(NodeRef *n)
+{
+	FieldType *grown;
+	int ncap;
+
+	if (n->field_count < n->fields_cap)
+		return true;
+	ncap = n->fields_cap > 0 ? n->fields_cap * 2 : 8;
+	grown = realloc(n->fields, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + n->fields_cap, 0, (size_t)(ncap - n->fields_cap) * sizeof *grown);
+	n->fields = grown;
+	n->fields_cap = ncap;
+	return true;
+}
+
+static bool ensure_consts_cap(NsRef *ns)
+{
+	NsConst *grown;
+	int ncap;
+
+	if (ns->const_count < ns->consts_cap)
+		return true;
+	ncap = ns->consts_cap > 0 ? ns->consts_cap * 2 : 16;
+	grown = realloc(ns->consts, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + ns->consts_cap, 0, (size_t)(ncap - ns->consts_cap) * sizeof *grown);
+	ns->consts = grown;
+	ns->consts_cap = ncap;
+	return true;
+}
+
+static bool ensure_aliases_cap(PackedType *p)
+{
+	PackedAlias *grown;
+	int ncap;
+
+	if (p->alias_count < p->aliases_cap)
+		return true;
+	ncap = p->aliases_cap > 0 ? p->aliases_cap * 2 : 4;
+	grown = realloc(p->aliases, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + p->aliases_cap, 0, (size_t)(ncap - p->aliases_cap) * sizeof *grown);
+	p->aliases = grown;
+	p->aliases_cap = ncap;
+	return true;
+}
+
+static bool ensure_call_patch_cap(Comp *c)
+{
+	void *a;
+	void *b;
+	void *d;
+	int ncap;
+
+	if (c->call_patch_count < c->call_patch_cap)
+		return true;
+	ncap = c->call_patch_cap > 0 ? c->call_patch_cap * 2 : 16;
+	a = realloc(c->call_patch_at, (size_t)ncap * sizeof *c->call_patch_at);
+	b = realloc(c->call_patch_obj, (size_t)ncap * sizeof *c->call_patch_obj);
+	d = realloc(c->call_patch_fn, (size_t)ncap * sizeof *c->call_patch_fn);
+	if (a == NULL || b == NULL || d == NULL)
+	{
+		free(a == c->call_patch_at ? NULL : a);
+		free(b == c->call_patch_obj ? NULL : b);
+		free(d == c->call_patch_fn ? NULL : d);
+		return false;
+	}
+	c->call_patch_at = a;
+	c->call_patch_obj = b;
+	c->call_patch_fn = d;
+	memset(c->call_patch_fn + c->call_patch_cap, 0,
+	       (size_t)(ncap - c->call_patch_cap) * sizeof *c->call_patch_fn);
+	c->call_patch_cap = ncap;
+	return true;
+}
+
+static bool add_call_patch(Comp *c, size_t at, int obj_id, const char *fn)
+{
+	if (c == NULL || !ensure_call_patch_cap(c))
+		return false;
+	c->call_patch_at[c->call_patch_count] = at;
+	c->call_patch_obj[c->call_patch_count] = obj_id;
+	c->call_patch_fn[c->call_patch_count] = comp_strdup(c, fn != NULL ? fn : "");
+	c->call_patch_count++;
+	return true;
+}
+
+static bool ensure_used_cap(Comp *c)
+{
+	AstUse *grown;
+	int ncap;
+
+	if (c->used_count < c->used_cap)
+		return true;
+	ncap = c->used_cap > 0 ? c->used_cap * 2 : 8;
+	grown = realloc(c->used, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + c->used_cap, 0, (size_t)(ncap - c->used_cap) * sizeof *grown);
+	c->used = grown;
+	c->used_cap = ncap;
 	return true;
 }
 
@@ -950,6 +1238,62 @@ static bool ensure_locals_cap(Comp *c)
 	return true;
 }
 
+
+/* returns 0 ok, 1 cycle, 2 oom */
+static int include_push(Comp *c, const char *path)
+{
+	char **grown;
+	int i;
+	int ncap;
+
+	if (c == NULL || path == NULL)
+		return 2;
+	for (i = 0; i < c->include_depth; i++)
+	{
+		if (c->include_stack[i] != NULL && strcmp(c->include_stack[i], path) == 0)
+			return 1;
+	}
+	if (c->include_depth >= c->include_cap)
+	{
+		ncap = c->include_cap > 0 ? c->include_cap * 2 : 8;
+		grown = realloc(c->include_stack, (size_t)ncap * sizeof *grown);
+		if (grown == NULL)
+			return 2;
+		c->include_stack = grown;
+		c->include_cap = ncap;
+	}
+	c->include_stack[c->include_depth++] = comp_strdup(c, path);
+	return 0;
+}
+
+static void include_pop(Comp *c)
+{
+	if (c != NULL && c->include_depth > 0)
+		c->include_depth--;
+}
+
+static bool path_push(Comp *c, char ***fields, int *n, int *cap, const char *name)
+{
+	char **grown;
+	int ncap;
+
+	if (c == NULL || fields == NULL || n == NULL || cap == NULL)
+		return false;
+	if (*n >= *cap)
+	{
+		ncap = *cap > 0 ? *cap * 2 : 8;
+		grown = realloc(*fields, (size_t)ncap * sizeof *grown);
+		if (grown == NULL)
+			return false;
+		*fields = grown;
+		*cap = ncap;
+	}
+	(*fields)[*n] = comp_strdup(c, name != NULL ? name : "");
+	(*n)++;
+	return true;
+}
+
+
 static void comp_free_tables(Comp *c)
 {
 	int i;
@@ -958,21 +1302,65 @@ static void comp_free_tables(Comp *c)
 		return;
 
 	for (i = 0; i < c->node_count; i++)
-		free(c->nodes[i].fns);
+	{
+		int j;
+
+		free_objfns(c->nodes[i].fns, c->nodes[i].fn_count);
+		for (j = 0; j < c->nodes[i].field_count; j++)
+		{
+			free(c->nodes[i].fields[j].name);
+			free(c->nodes[i].fields[j].type);
+		}
+		free(c->nodes[i].fields);
+	}
 	free(c->nodes);
 	c->nodes = NULL;
 	for (i = 0; i < c->ns_count; i++)
-		free(c->nss[i].fns);
+	{
+		int j;
+
+		free_objfns(c->nss[i].fns, c->nss[i].fn_count);
+		for (j = 0; j < c->nss[i].const_count; j++)
+			free(c->nss[i].consts[j].name);
+		free(c->nss[i].consts);
+	}
+	free(c->nss);
+	c->nss = NULL;
+	for (i = 0; i < c->packed_count; i++)
+		free(c->packed[i].aliases);
+	free(c->packed);
+	c->packed = NULL;
 	free(c->locals);
 	free(c->local_growable);
 	free(c->slot_names);
 	free(c->slot_kinds);
 	free(c->slot_types);
+	free(c->call_patch_at);
+	free(c->call_patch_obj);
+	free(c->call_patch_fn);
+	free(c->include_stack);
+	for (i = 0; i < c->used_count; i++)
+		free(c->used[i].path);
+	free(c->used);
+	for (i = 0; i < c->name_pool_count; i++)
+		free(c->name_pool[i]);
+	free(c->name_pool);
 	c->locals = NULL;
 	c->local_growable = NULL;
 	c->slot_names = NULL;
 	c->slot_kinds = NULL;
 	c->slot_types = NULL;
+	c->call_patch_at = NULL;
+	c->call_patch_obj = NULL;
+	c->call_patch_fn = NULL;
+	c->include_stack = NULL;
+	c->used = NULL;
+	c->name_pool = NULL;
+	c->name_pool_count = 0;
+	c->param = NULL;
+	c->param_type = NULL;
+	c->fn_ret_type = NULL;
+	c->last_ret_type = NULL;
 }
 
 /* NUL-terminated view of tok text; valid until the next tok_cstr call. */
@@ -1246,13 +1634,15 @@ static PackedType *ensure_packed(Comp *c, const char *name)
 
 	if (p != NULL)
 		return p;
-	if (c == NULL || name == NULL || name[0] == '\0'
-	    || c->packed_count >= STGE_MAX_PACKED)
+	if (c == NULL || name == NULL || name[0] == '\0')
+		return NULL;
+	if (!ensure_packed_cap(c))
 		return NULL;
 
 	p = &c->packed[c->packed_count++];
 	memset(p, 0, sizeof *p);
-	snprintf(p->name, sizeof p->name, "%s", name);
+	p->name = comp_strdup(c, name);
+	p->elem = comp_strdup(c, "");
 	p->elem_kind = FK_INT;
 	return p;
 }
@@ -1278,15 +1668,14 @@ static bool packed_is_composite(const PackedType *p)
 	return p != NULL && p->alias_count > 0;
 }
 
-static void packed_add_alias(PackedType *p, const char *comp, int32_t index)
+static void packed_add_alias(Comp *c, PackedType *p, const char *comp, int32_t index)
 {
-	if (p == NULL || comp == NULL || p->alias_count >= STGE_MAX_ALIASES)
+	if (c == NULL || p == NULL || comp == NULL || !ensure_aliases_cap(p))
 		return;
 	if (packed_alias_index(p, comp) >= 0)
 		return;
 
-	snprintf(p->aliases[p->alias_count].name,
-		 sizeof p->aliases[0].name, "%s", comp);
+	p->aliases[p->alias_count].name = comp_strdup(c, comp);
 	p->aliases[p->alias_count].index = index;
 	p->alias_count++;
 }
@@ -1338,19 +1727,19 @@ static void record_field_kind(Comp *c, const char *node, const char *field, Fiel
 			n->fields[i].kind = kind;
 			n->fields[i].arr_len = 1;
 			n->fields[i].growable = false;
-			n->fields[i].type[0] = '\0';
+			n->fields[i].type = xstrdup("");
 			return;
 		}
 	}
 
-	if (n->field_count >= STGE_MAX_FIELD_KINDS)
+	if (!ensure_fields_cap(n))
 		return;
 
-	strcpy(n->fields[n->field_count].name, field);
+	n->fields[n->field_count].name = xstrdup(field);
 	n->fields[n->field_count].kind = kind;
 	n->fields[n->field_count].arr_len = 1;
 	n->fields[n->field_count].growable = false;
-	n->fields[n->field_count].type[0] = '\0';
+	n->fields[n->field_count].type = xstrdup("");
 	n->field_count++;
 }
 
@@ -1368,7 +1757,7 @@ static void record_field_obj(Comp *c, const char *node, const char *field, const
 		if (strcmp(n->fields[i].name, field) == 0)
 		{
 			if (type != NULL)
-				snprintf(n->fields[i].type, sizeof n->fields[i].type, "%s", type);
+				n->fields[i].type = xstrdup(type);
 			return;
 		}
 	}
@@ -1385,7 +1774,7 @@ static const char *lookup_field_type(Comp *c, const char *node, const char *fiel
 	for (i = 0; i < n->field_count; i++)
 	{
 		if (strcmp(n->fields[i].name, field) == 0)
-			return n->fields[i].type;
+			return n->fields[i].type != NULL ? n->fields[i].type : "";
 	}
 
 	return "";
@@ -1411,14 +1800,14 @@ static void record_field_array(Comp *c, const char *node, const char *field,
 		}
 	}
 
-	if (n->field_count >= STGE_MAX_FIELD_KINDS)
+	if (!ensure_fields_cap(n))
 		return;
 
-	strcpy(n->fields[n->field_count].name, field);
+	n->fields[n->field_count].name = xstrdup(field);
 	n->fields[n->field_count].kind = kind;
 	n->fields[n->field_count].arr_len = arr_len;
 	n->fields[n->field_count].growable = growable;
-	n->fields[n->field_count].type[0] = '\0';
+	n->fields[n->field_count].type = xstrdup("");
 	n->field_count++;
 }
 
@@ -1440,7 +1829,7 @@ static void record_field_packed(Comp *c, const char *node, const char *field,
 	{
 		if (strcmp(n->fields[i].name, field) == 0)
 		{
-			snprintf(n->fields[i].type, sizeof n->fields[i].type, "%s", p->name);
+			n->fields[i].type = xstrdup(p->name);
 			return;
 		}
 	}
@@ -1551,15 +1940,15 @@ static NsRef *ensure_ns(Comp *c, const char *name)
 	if (ns != NULL)
 		return ns;
 
-	if (c->ns_count >= STGE_MAX_NS)
+	if (!ensure_nss_cap(c))
 	{
-		fail(c, "too many namespaces");
+		fail(c, "out of memory");
 		return NULL;
 	}
 
 	ns = &c->nss[c->ns_count++];
 	memset(ns, 0, sizeof *ns);
-	strcpy(ns->name, name);
+	ns->name = comp_strdup(c, name);
 	ns->obj_id = -1;
 	return ns;
 }
@@ -1586,7 +1975,7 @@ static NodeRef *add_node(Comp *c, const char *name)
 
 	node = &c->nodes[c->node_count];
 	memset(node, 0, sizeof *node);
-	strcpy(node->name, name);
+	node->name = comp_strdup(c, name);
 	{
 		int tindex = stge_type_register(name);
 
@@ -1816,14 +2205,12 @@ static bool ns_add_fn_arity(NsRef *ns, const char *name, int pc, bool has_arg, i
 		return false;
 
 	memset(&ns->fns[ns->fn_count], 0, sizeof ns->fns[0]);
-	strcpy(ns->fns[ns->fn_count].name, name);
+	objfn_set_name(&ns->fns[ns->fn_count], name);
 	ns->fns[ns->fn_count].pc = pc;
 	ns->fns[ns->fn_count].has_arg = has_arg;
 	ns->fns[ns->fn_count].argc = argc;
 	ns->fns[ns->fn_count].self_param = -1;
-	if (ret_type != NULL && ret_type[0] != '\0')
-		snprintf(ns->fns[ns->fn_count].ret_type,
-			 sizeof ns->fns[ns->fn_count].ret_type, "%s", ret_type);
+	objfn_set_ret(&ns->fns[ns->fn_count], ret_type);
 	ns->fn_count++;
 	return true;
 }
@@ -1849,11 +2236,7 @@ static bool ns_set_fn_arity(NsRef *ns, const char *name, int pc, bool has_arg, i
 			ns->fns[i].pc = pc;
 			ns->fns[i].has_arg = has_arg;
 			ns->fns[i].argc = argc;
-			if (ret_type != NULL && ret_type[0] != '\0')
-				snprintf(ns->fns[i].ret_type, sizeof ns->fns[i].ret_type,
-					 "%s", ret_type);
-			else
-				ns->fns[i].ret_type[0] = '\0';
+			objfn_set_ret(&ns->fns[i], ret_type);
 			return true;
 		}
 	}
@@ -1926,7 +2309,7 @@ static void record_fn_name(Comp *c, const char *owner, const char *fn, int argc)
 		return;
 
 	memset(&node->fns[node->fn_count], 0, sizeof node->fns[0]);
-	memcpy(node->fns[node->fn_count].name, fn, sizeof node->fns[0].name);
+	objfn_set_name(&node->fns[node->fn_count], fn);
 	node->fns[node->fn_count].pc = -1;
 	node->fns[node->fn_count].has_arg = has_arg;
 	node->fns[node->fn_count].argc = argc;
@@ -1940,7 +2323,7 @@ static bool ns_add_extern(NsRef *ns, const char *name, int native_id, bool has_a
 		return false;
 
 	memset(&ns->fns[ns->fn_count], 0, sizeof ns->fns[0]);
-	strcpy(ns->fns[ns->fn_count].name, name);
+	objfn_set_name(&ns->fns[ns->fn_count], name);
 	ns->fns[ns->fn_count].pc = -2;
 	ns->fns[ns->fn_count].has_arg = has_arg;
 	ns->fns[ns->fn_count].argc = has_arg ? 1 : 0;
@@ -1955,7 +2338,7 @@ static bool ns_add_const(NsRef *ns, const char *name, int32_t value)
 {
 	int i;
 
-	if (ns == NULL || name == NULL || ns->const_count >= STGE_MAX_CONST)
+	if (ns == NULL || name == NULL || !ensure_consts_cap(ns))
 		return false;
 
 	for (i = 0; i < ns->const_count; i++)
@@ -1968,7 +2351,7 @@ static bool ns_add_const(NsRef *ns, const char *name, int32_t value)
 	}
 
 	memset(&ns->consts[ns->const_count], 0, sizeof ns->consts[0]);
-	strcpy(ns->consts[ns->const_count].name, name);
+	ns->consts[ns->const_count].name = xstrdup(name);
 	ns->consts[ns->const_count].value = value;
 	ns->const_count++;
 	return true;
@@ -2059,7 +2442,7 @@ static bool add_local_kind(Comp *c, const char *name, bool growable)
 	if (!ensure_locals_cap(c))
 		return false;
 
-	strcpy(c->locals[c->local_count], name);
+	c->locals[c->local_count] = comp_strdup(c, name);
 	c->local_growable[c->local_count] = growable;
 	c->local_count++;
 	return true;
@@ -2074,7 +2457,7 @@ static int find_slot_local(const Comp *c, const char *name)
 
 	for (i = 0; i < c->slot_count; i++)
 	{
-		if (c->slot_names[i][0] != '\0' && strcmp(c->slot_names[i], name) == 0)
+		if (c->slot_names[i] != NULL && c->slot_names[i][0] != '\0' && strcmp(c->slot_names[i], name) == 0)
 			return i;
 	}
 
@@ -2118,9 +2501,9 @@ static int add_slot_local(Comp *c, const char *name, FieldKind kind)
 	if (!ensure_slots_cap(c))
 		return -1;
 
-	strcpy(c->slot_names[c->slot_count], name);
+	c->slot_names[c->slot_count] = comp_strdup(c, name);
 	c->slot_kinds[c->slot_count] = kind;
-	c->slot_types[c->slot_count][0] = '\0';
+	c->slot_types[c->slot_count] = comp_strdup(c, "");
 	c->slot_count++;
 	return c->slot_count - 1;
 }
@@ -2130,25 +2513,23 @@ static void set_slot_type(Comp *c, int slot, const char *type)
 	if (c == NULL || slot < 0 || slot >= c->slot_count)
 		return;
 	if (type == NULL || type[0] == '\0')
-		c->slot_types[slot][0] = '\0';
+		c->slot_types[slot] = comp_strdup(c, "");
 	else
-		snprintf(c->slot_types[slot], sizeof c->slot_types[slot], "%s", type);
+		c->slot_types[slot] = comp_strdup(c, type);
 }
 
 static void apply_slot_type(Comp *c, int slot)
 {
 	if (c == NULL || slot < 0 || slot >= c->slot_count)
 		return;
-	if (c->slot_types[slot][0] != '\0')
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s",
-			 c->slot_types[slot]);
+	if (c->slot_types[slot] != NULL && (c->slot_types[slot] != NULL && c->slot_types[slot][0] != '\0'))
+		set_str(&c->last_ret_type, c, c->slot_types[slot]);
 }
 
 static void apply_param_type(Comp *c)
 {
-	if (c != NULL && c->param_type[0] != '\0')
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s",
-			 c->param_type);
+	if (c != NULL && (c->param_type != NULL && c->param_type[0] != '\0'))
+		set_str(&c->last_ret_type, c, c->param_type);
 }
 
 static bool join_ns(char *dst, size_t dst_size, const char *a, const char *b)
@@ -2583,7 +2964,7 @@ static void emit_stack_to_str(Comp *c)
 {
 	if (c->expr_kind == EK_INT)
 		emit_call_to_str(c, "int");
-	else if (c->expr_kind == EK_OBJ && c->last_ret_type[0] != '\0'
+	else if (c->expr_kind == EK_OBJ && (c->last_ret_type != NULL && c->last_ret_type[0] != '\0')
 		 && strcmp(c->last_ret_type, "String") != 0)
 		emit_call_to_str(c, c->last_ret_type);
 	else
@@ -2655,27 +3036,22 @@ static bool emit_stacked_instance_call(Comp *c, const char *type_name, const cha
 		VmProg *s = stge_prog();
 
 		emit_push(c, fn->pc);
-		if (fn->pc < 0 && s != NULL && c->call_patch_count < STGE_MAX_CALL_PATCH)
-		{
-			c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-			c->call_patch_obj[c->call_patch_count] = node->id;
-			strcpy(c->call_patch_fn[c->call_patch_count], method);
-			c->call_patch_count++;
-		}
+		if (fn->pc < 0 && s != NULL)
+			add_call_patch(c, s->code_len - 4, node->id, method);
 	}
 	emit_call(c, OP_CALL, fn->argc);
-	if (fn->ret_type[0] != '\0')
+	if ((fn->ret_type != NULL && fn->ret_type[0] != '\0'))
 	{
 		if (strcmp(fn->ret_type, "String") == 0
 		    || find_node(c, fn->ret_type) != NULL)
 		{
 			c->expr_kind = EK_OBJ;
-			snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", fn->ret_type);
+			set_str(&c->last_ret_type, c, fn->ret_type);
 		}
 		else
 		{
 			c->expr_kind = EK_INT;
-			snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", fn->ret_type);
+			set_str(&c->last_ret_type, c, fn->ret_type);
 		}
 	}
 	else
@@ -2701,7 +3077,7 @@ static void apply_field(Comp *c, const char *field)
 		emit_push(c, idx);
 		emit_u8(c, OP_GET_MEM);
 		c->expr_kind = EK_INT;
-		c->last_ret_type[0] = '\0';
+		set_str(&c->last_ret_type, c, "");
 		return;
 	}
 
@@ -2738,7 +3114,7 @@ static void compile_value_dots(Comp *c)
 		Tok after_name;
 
 		type_name[0] = '\0';
-		if (c->last_ret_type[0] != '\0')
+		if ((c->last_ret_type != NULL && c->last_ret_type[0] != '\0'))
 			snprintf(type_name, sizeof type_name, "%s", c->last_ret_type);
 		else if (c->expr_kind == EK_INT)
 			snprintf(type_name, sizeof type_name, "int");
@@ -2857,7 +3233,7 @@ static bool next_is_call(const Comp *c)
 
 static const char *field_owner(const Comp *c, const char *recv)
 {
-	if (c != NULL && c->has_param && recv != NULL && strcmp(recv, c->param) == 0 && c->param_type[0] != '\0')
+	if (c != NULL && c->has_param && recv != NULL && strcmp(recv, c->param) == 0 && (c->param_type != NULL && c->param_type[0] != '\0'))
 		return c->param_type;
 
 	return recv;
@@ -3206,7 +3582,7 @@ static void emit_string_obj(Comp *c, const char *text)
 	emit_push_str(c, text != NULL ? text : "");
 	emit_u8(c, OP_STRING_WRAP);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_extern1(Comp *c, const char *name)
@@ -3249,14 +3625,14 @@ static void emit_string_new(Comp *c)
 
 	emit_extern(c, id, 0);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_string_clear(Comp *c)
 {
 	emit_extern1(c, "stge_string_clear");
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_string_append(Comp *c)
@@ -3264,7 +3640,7 @@ static void emit_string_append(Comp *c)
 	/* stack: dest, src -> dest */
 	emit_extern2(c, "stge_string_append");
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_string_append_int(Comp *c)
@@ -3272,7 +3648,7 @@ static void emit_string_append_int(Comp *c)
 	/* stack: dest, int -> dest */
 	emit_extern2(c, "stge_string_append_int");
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_string_concat(Comp *c)
@@ -3287,7 +3663,7 @@ static void emit_string_concat(Comp *c)
 
 	emit_extern(c, id, 2);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_as_string(Comp *c)
@@ -3303,7 +3679,7 @@ static void emit_as_string(Comp *c)
 		emit_u8(c, OP_STR_F);
 		emit_u8(c, OP_STRING_WRAP);
 		c->expr_kind = EK_OBJ;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+		set_str(&c->last_ret_type, c, "String");
 		return;
 	}
 
@@ -3312,11 +3688,11 @@ static void emit_as_string(Comp *c)
 		emit_u8(c, OP_STR_D);
 		emit_u8(c, OP_STRING_WRAP);
 		c->expr_kind = EK_OBJ;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+		set_str(&c->last_ret_type, c, "String");
 		return;
 	}
 
-	if (c->expr_kind == EK_OBJ && c->last_ret_type[0] != '\0')
+	if (c->expr_kind == EK_OBJ && (c->last_ret_type != NULL && c->last_ret_type[0] != '\0'))
 	{
 		emit_call_to_str(c, c->last_ret_type);
 		return;
@@ -3332,13 +3708,13 @@ static void emit_as_string(Comp *c)
 	{
 		emit_u8(c, OP_STRING_WRAP);
 		c->expr_kind = EK_OBJ;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+		set_str(&c->last_ret_type, c, "String");
 		return;
 	}
 
 	emit_u8(c, OP_STR_OBJ);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 /* Dest String id is already on the stack; clear and append parts into it. */
@@ -3398,7 +3774,7 @@ static void compile_string_into(Comp *c)
 	}
 
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void compile_string(Comp *c)
@@ -3439,7 +3815,7 @@ static void compile_atom(Comp *c)
 		return;
 
 	c->expr_kind = EK_INT;
-	c->last_ret_type[0] = '\0';
+	set_str(&c->last_ret_type, c, "");
 
 	if (at(c, TOK_PLUS))
 	{
@@ -3499,7 +3875,7 @@ static void compile_atom(Comp *c)
 	{
 		emit_push(c, c->tok.value);
 		c->expr_kind = EK_INT;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "int");
+		set_str(&c->last_ret_type, c, "int");
 		advance(c);
 		compile_value_dots(c);
 		return;
@@ -3626,13 +4002,7 @@ static void compile_atom(Comp *c)
 			{
 				emit_push(c, cn->value);
 				c->expr_kind = EK_INT;
-				if (strlen(qname) >= sizeof c->last_ret_type)
-				{
-					fail(c, "name too long");
-					return;
-				}
-
-				memcpy(c->last_ret_type, qname, strlen(qname) + 1);
+				set_str(&c->last_ret_type, c, qname);
 				return;
 			}
 
@@ -3662,7 +4032,7 @@ static void compile_atom(Comp *c)
 		{
 			emit_push(c, cn->value);
 			c->expr_kind = EK_INT;
-			snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", path);
+			set_str(&c->last_ret_type, c, path);
 			return;
 		}
 
@@ -3690,7 +4060,7 @@ static void compile_atom(Comp *c)
 			const char *ft = lookup_field_type(c, path, last);
 
 			if (ft != NULL && ft[0] != '\0')
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", ft);
+				set_str(&c->last_ret_type, c, ft);
 		}
 		return;
 	}
@@ -3814,7 +4184,7 @@ static void compile_atom(Comp *c)
 				emit_push_str(c, field);
 				emit_u8(c, OP_MEM_COPY);
 				c->expr_kind = EK_OBJ;
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", pf->name);
+				set_str(&c->last_ret_type, c, pf->name);
 				if (at(c, TOK_DOT))
 					compile_value_dots(c);
 				return;
@@ -3881,7 +4251,7 @@ static void compile_atom(Comp *c)
 
 					c->expr_kind = EK_OBJ;
 					if (nt != NULL && nt[0] != '\0')
-						snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", nt);
+						set_str(&c->last_ret_type, c, nt);
 				}
 				else
 					c->expr_kind = EK_INT;
@@ -3898,7 +4268,7 @@ static void compile_atom(Comp *c)
 				const char *ot = lookup_field_type(c, owner, field);
 
 				if (ot != NULL && ot[0] != '\0')
-					snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", ot);
+					set_str(&c->last_ret_type, c, ot);
 			}
 			if (at(c, TOK_DOT))
 				compile_value_dots(c);
@@ -3956,8 +4326,8 @@ static void compile_atom(Comp *c)
 			emit_get_local(c, slot);
 			c->expr_kind = c->slot_kinds[slot] == FK_OBJ ? EK_OBJ : EK_INT;
 			apply_slot_type(c, slot);
-			if (c->last_ret_type[0] == '\0' && c->slot_kinds[slot] == FK_INT)
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "int");
+			if ((c->last_ret_type == NULL || c->last_ret_type[0] == '\0') && c->slot_kinds[slot] == FK_INT)
+				set_str(&c->last_ret_type, c, "int");
 			advance(c);
 			compile_value_dots(c);
 			return;
@@ -4278,7 +4648,7 @@ static void emit_call_to_str(Comp *c, const char *type)
 	{
 		emit_extern(c, sf->native_id, 1);
 		c->expr_kind = EK_OBJ;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+		set_str(&c->last_ret_type, c, "String");
 		return;
 	}
 
@@ -4295,22 +4665,17 @@ static void emit_call_to_str(Comp *c, const char *type)
 	emit_push(c, 0);
 	emit_push_node(c, tid);
 	emit_push(c, sf != NULL ? sf->pc : -1);
-	if (sf != NULL && sf->pc < 0 && c->call_patch_count < STGE_MAX_CALL_PATCH)
+	if (sf != NULL && sf->pc < 0)
 	{
 		VmProg *s = stge_prog();
 
 		if (s != NULL)
-		{
-			c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-			c->call_patch_obj[c->call_patch_count] = tid;
-			strcpy(c->call_patch_fn[c->call_patch_count], "to_str");
-			c->call_patch_count++;
-		}
+			add_call_patch(c, s->code_len - 4, tid, "to_str");
 	}
 
 	emit_call(c, OP_CALL_NS, 1);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+	set_str(&c->last_ret_type, c, "String");
 }
 
 static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
@@ -4343,7 +4708,7 @@ static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
 	}
 
 	expect(c, TOK_LPAREN, "expected '('");
-	c->last_ret_type[0] = '\0';
+	set_str(&c->last_ret_type, c, "");
 
 	{
 		int argc = 0;
@@ -4395,12 +4760,9 @@ static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
 
 			emit_push(c, pc);
 			if (pc < 0 && fn != NULL && s != NULL
-			    && c->call_patch_count < STGE_MAX_CALL_PATCH)
+			    )
 			{
-				c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-				c->call_patch_obj[c->call_patch_count] = obj_id;
-				strcpy(c->call_patch_fn[c->call_patch_count], fn);
-				c->call_patch_count++;
+				add_call_patch(c, s->code_len - 4, obj_id, fn);
 			}
 		}
 		if (fn != NULL && strcmp(fn, "new") == 0)
@@ -4420,9 +4782,9 @@ static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
 			}
 
 			if (type != NULL)
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", type->name);
+				set_str(&c->last_ret_type, c, type->name);
 			else if (ret_type != NULL && ret_type[0] != '\0')
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", ret_type);
+				set_str(&c->last_ret_type, c, ret_type);
 		}
 		else
 		{
@@ -4436,7 +4798,7 @@ static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
 			if (fn != NULL && strcmp(fn, "to_str") == 0)
 			{
 				c->expr_kind = EK_OBJ;
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+				set_str(&c->last_ret_type, c, "String");
 			}
 			else if (ret_type != NULL && ret_type[0] != '\0')
 			{
@@ -4450,8 +4812,7 @@ static void emit_script_call(Comp *c, int obj_id, int pc, bool has_arg, bool ns,
 				if (is_obj)
 				{
 					c->expr_kind = EK_OBJ;
-					snprintf(c->last_ret_type, sizeof c->last_ret_type,
-						 "%s", ret_type);
+					set_str(&c->last_ret_type, c, ret_type);
 				}
 				else
 					c->expr_kind = EK_INT;
@@ -4631,7 +4992,7 @@ static void parse_packed_aliases(Comp *c, PackedType *p)
 
 		advance(c);
 		expect(c, TOK_RBRACK, "expected ']'");
-		packed_add_alias(p, alias, idx);
+		packed_add_alias(c, p, alias, idx);
 	}
 
 	expect(c, TOK_RBRACE, "expected '}'");
@@ -4649,7 +5010,7 @@ static PackedType *record_packed_layout(Comp *c, const char *name,
 		return NULL;
 
 	if (elem != NULL)
-		snprintf(p->elem, sizeof p->elem, "%s", elem);
+		p->elem = comp_strdup(c, elem);
 	p->len = len;
 	if (elem != NULL && type_name_kind(elem, &fk, &op, &mk))
 		p->elem_kind = fk;
@@ -4967,9 +5328,9 @@ static bool mark_used(Comp *c, const char *path)
 			return false;
 	}
 
-	if (c->used_count >= STGE_MAX_USE)
+	if (!ensure_used_cap(c))
 	{
-		fail(c, "too many use files");
+		fail(c, "out of memory");
 		return false;
 	}
 
@@ -5166,16 +5527,24 @@ static void compile_include(Comp *c, const char *path)
 	Lex saved_lex;
 	Tok saved_tok;
 	const char *saved_path;
+	int push_rc;
 
-	if (c->include_depth >= STGE_MAX_INCLUDE)
+	push_rc = include_push(c, path);
+	if (push_rc == 1)
 	{
-		fail(c, "too many includes");
+		fail(c, "include cycle");
+		return;
+	}
+	if (push_rc != 0)
+	{
+		fail(c, "out of memory");
 		return;
 	}
 
 	src = read_file(path, &len);
 	if (src == NULL)
 	{
+		include_pop(c);
 		failf(c, "could not read include '%s'", path);
 		return;
 	}
@@ -5191,19 +5560,21 @@ static void compile_include(Comp *c, const char *path)
 	c->lex.line = 1;
 	c->lex.cont_string = false;
 	c->lex.interp_sp = 0;
+	c->lex.interp_depth = NULL;
+	c->lex.interp_cap = 0;
 	c->lex.buf = NULL;
 	c->lex.buf_cap = 0;
 	c->lex.buf_len = 0;
 	c->lex.persist = NULL;
 	c->lex.persist_count = 0;
 	c->lex.persist_cap = 0;
-	c->include_depth++;
 
 	advance(c);
 	compile_file_body(c);
 
-	c->include_depth--;
+	include_pop(c);
 	free(c->lex.buf);
+	free(c->lex.interp_depth);
 	lex_persist_free(&c->lex);
 	c->lex = saved_lex;
 	c->tok = saved_tok;
@@ -5218,16 +5589,24 @@ static void include_pass(Comp *c, const char *path, bool compiling)
 	Lex saved_lex;
 	Tok saved_tok;
 	const char *saved_path;
+	int push_rc;
 
-	if (c->include_depth >= STGE_MAX_INCLUDE)
+	push_rc = include_push(c, path);
+	if (push_rc == 1)
 	{
-		fail(c, "too many includes");
+		fail(c, "include cycle");
+		return;
+	}
+	if (push_rc != 0)
+	{
+		fail(c, "out of memory");
 		return;
 	}
 
 	src = read_file(path, &len);
 	if (src == NULL)
 	{
+		include_pop(c);
 		failf(c, "could not read include '%s'", path);
 		return;
 	}
@@ -5243,13 +5622,14 @@ static void include_pass(Comp *c, const char *path, bool compiling)
 	c->lex.line = 1;
 	c->lex.cont_string = false;
 	c->lex.interp_sp = 0;
+	c->lex.interp_depth = NULL;
+	c->lex.interp_cap = 0;
 	c->lex.buf = NULL;
 	c->lex.buf_cap = 0;
 	c->lex.buf_len = 0;
 	c->lex.persist = NULL;
 	c->lex.persist_count = 0;
 	c->lex.persist_cap = 0;
-	c->include_depth++;
 
 	advance(c);
 	if (compiling)
@@ -5257,8 +5637,9 @@ static void include_pass(Comp *c, const char *path, bool compiling)
 	else
 		declare_statements(c);
 
-	c->include_depth--;
+	include_pop(c);
 	free(c->lex.buf);
+	free(c->lex.interp_depth);
 	lex_persist_free(&c->lex);
 	c->lex = saved_lex;
 	c->tok = saved_tok;
@@ -5365,7 +5746,8 @@ static void compile_call(Comp *c)
 	if (at(c, TOK_LPAREN))
 	{
 		if (strcmp(recv, "byte") == 0 || strcmp(recv, "uint") == 0
-		    || strcmp(recv, "int") == 0)
+		    || strcmp(recv, "int") == 0 || strcmp(recv, "int64") == 0
+		    || strcmp(recv, "uint64") == 0)
 		{
 			expect(c, TOK_LPAREN, "expected '('");
 			if (at(c, TOK_RPAREN))
@@ -5374,7 +5756,7 @@ static void compile_call(Comp *c)
 				compile_expr(c);
 			expect(c, TOK_RPAREN, "expected ')'");
 			c->expr_kind = EK_INT;
-			snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", recv);
+			set_str(&c->last_ret_type, c, recv);
 			return;
 		}
 
@@ -5524,7 +5906,7 @@ static void compile_call(Comp *c)
 			if (strcmp(fn, "to_str") == 0 || strcmp(fn, "concat") == 0)
 			{
 				c->expr_kind = EK_OBJ;
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+				set_str(&c->last_ret_type, c, "String");
 			}
 			else
 				c->expr_kind = EK_INT;
@@ -5552,37 +5934,40 @@ static void compile_call(Comp *c)
 
 	if (look(c).kind == TOK_DOT)
 	{
-		char fields[STGE_MAX_PATH][STGE_NAME_MAX];
+		char **fields = NULL;
 		char method[STGE_NAME_MAX];
 		char owner[STGE_NAME_MAX];
 		const NodeRef *node;
 		const ObjFn *sf = NULL;
 		int n = 0;
+		int fields_cap = 0;
 		int i;
 		int pc = -1;
 
-		tok_copy(fields[0], sizeof fields[0], &c->tok);
-		n = 1;
+		if (!path_push(c, &fields, &n, &fields_cap, tok_cstr(c, &c->tok)))
+		{
+			fail(c, "out of memory");
+			return;
+		}
 		advance(c);
 		while (at(c, TOK_DOT))
 		{
 			advance(c);
 			if (!at(c, TOK_IDENT))
 			{
+				free(fields);
 				fail(c, "expected a method");
 				return;
 			}
 
 			if (look(c).kind == TOK_DOT)
 			{
-				if (n >= STGE_MAX_PATH)
+				if (!path_push(c, &fields, &n, &fields_cap, tok_cstr(c, &c->tok)))
 				{
-					fail(c, "name too long");
+					free(fields);
+					fail(c, "out of memory");
 					return;
 				}
-
-				tok_copy(fields[n], sizeof fields[0], &c->tok);
-				n++;
 				advance(c);
 				continue;
 			}
@@ -5630,6 +6015,7 @@ static void compile_call(Comp *c)
 			}
 			else
 				failf(c, "unknown method '%s' on '%s'", method, owner);
+			free(fields);
 			return;
 		}
 
@@ -5650,21 +6036,18 @@ static void compile_call(Comp *c)
 			for (i = 0; i < n; i++)
 				emit_get_field(c, fields[i]);
 			emit_push(c, pc);
-			if (pc < 0 && c->call_patch_count < STGE_MAX_CALL_PATCH)
+			if (pc < 0)
 			{
 				VmProg *s = stge_prog();
 
 				if (s != NULL)
-				{
-					c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-					c->call_patch_obj[c->call_patch_count] = node != NULL ? node->id : 0;
-					strcpy(c->call_patch_fn[c->call_patch_count], method);
-					c->call_patch_count++;
-				}
+					add_call_patch(c, s->code_len - 4,
+						       node != NULL ? node->id : 0, method);
 			}
 
 			emit_call(c, OP_CALL, argc);
 			c->expr_kind = EK_INT;
+			free(fields);
 			return;
 		}
 	}
@@ -5750,7 +6133,7 @@ static void compile_call(Comp *c)
 			c->tok = saved_tok;
 		}
 
-		if (c->has_param && strcmp(recv, c->param) == 0 && c->param_type[0] != '\0')
+		if (c->has_param && strcmp(recv, c->param) == 0 && (c->param_type != NULL && c->param_type[0] != '\0'))
 		{
 			const NodeRef *ptype = find_node(c, c->param_type);
 			int i;
@@ -5803,7 +6186,7 @@ static void compile_call(Comp *c)
 			int slot = find_slot_local(c, recv);
 			const NodeRef *stype = NULL;
 
-			if (slot >= 0 && c->slot_types[slot][0] != '\0')
+			if (slot >= 0 && (c->slot_types[slot] != NULL && c->slot_types[slot][0] != '\0'))
 				stype = find_node(c, c->slot_types[slot]);
 			if (stype != NULL)
 			{
@@ -5815,8 +6198,7 @@ static void compile_call(Comp *c)
 					{
 						emit_get_local(c, slot);
 						c->expr_kind = EK_INT;
-						snprintf(c->last_ret_type, sizeof c->last_ret_type,
-							 "%s", stype->name);
+						set_str(&c->last_ret_type, c, stype->name);
 						if (emit_stacked_instance_call(c, stype->name, fn))
 							return;
 						failf(c, "unknown method '%s' on '%s'", fn, recv);
@@ -5836,7 +6218,7 @@ static void compile_call(Comp *c)
 				emit_recv(c, recv);
 				emit_u8(c, OP_STR_OBJ);
 				c->expr_kind = EK_OBJ;
-				snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+				set_str(&c->last_ret_type, c, "String");
 				return;
 			}
 
@@ -5867,7 +6249,7 @@ static void compile_call(Comp *c)
 			emit_recv(c, recv);
 			emit_u8(c, OP_STR_OBJ);
 			c->expr_kind = EK_OBJ;
-			snprintf(c->last_ret_type, sizeof c->last_ret_type, "String");
+			set_str(&c->last_ret_type, c, "String");
 			return;
 		}
 
@@ -6456,7 +6838,7 @@ static void compile_member_assign(Comp *c, const char *recv, const char *member)
 
 		if (got == EK_OBJ)
 		{
-			if (c->last_ret_type[0] != '\0')
+			if ((c->last_ret_type != NULL && c->last_ret_type[0] != '\0'))
 				record_field_obj(c, recv, member, c->last_ret_type);
 			emit_push(c, 0);
 			emit_u8(c, OP_SWAP);
@@ -6473,7 +6855,7 @@ static void compile_member_assign(Comp *c, const char *recv, const char *member)
 	}
 }
 
-static void compile_store_chain(Comp *c, const char *recv, char fields[][STGE_NAME_MAX], int n)
+static void compile_store_chain(Comp *c, const char *recv, char **fields, int n)
 {
 	int i;
 
@@ -6625,19 +7007,14 @@ static void emit_type_op_call(Comp *c, const char *type, const char *op)
 		VmProg *s = stge_prog();
 
 		emit_push(c, sf->pc);
-		if (sf->pc < 0 && s != NULL && c->call_patch_count < STGE_MAX_CALL_PATCH)
-		{
-			c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-			c->call_patch_obj[c->call_patch_count] = obj_id;
-			strcpy(c->call_patch_fn[c->call_patch_count], op);
-			c->call_patch_count++;
-		}
+		if (sf->pc < 0 && s != NULL)
+			add_call_patch(c, s->code_len - 4, obj_id, op);
 	}
 	emit_call(c, OP_CALL_NS, 2);
 	if (find_packed(c, type) != NULL)
 	{
 		c->expr_kind = EK_OBJ;
-		snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", type);
+		set_str(&c->last_ret_type, c, type);
 	}
 	else
 		c->expr_kind = EK_INT;
@@ -6658,17 +7035,12 @@ static bool emit_packed_new0(Comp *c, const char *type)
 		VmProg *s = stge_prog();
 
 		emit_push(c, ctor->pc);
-		if (ctor->pc < 0 && s != NULL && c->call_patch_count < STGE_MAX_CALL_PATCH)
-		{
-			c->call_patch_at[c->call_patch_count] = s->code_len - 4;
-			c->call_patch_obj[c->call_patch_count] = obj_id;
-			strcpy(c->call_patch_fn[c->call_patch_count], "new");
-			c->call_patch_count++;
-		}
+		if (ctor->pc < 0 && s != NULL)
+			add_call_patch(c, s->code_len - 4, obj_id, "new");
 	}
 	emit_call(c, OP_CALL_NEW, 0);
 	c->expr_kind = EK_OBJ;
-	snprintf(c->last_ret_type, sizeof c->last_ret_type, "%s", type);
+	set_str(&c->last_ret_type, c, type);
 	return true;
 }
 
@@ -6688,7 +7060,7 @@ static const PackedType *packed_of_name(Comp *c, const char *recv)
 }
 
 static void compile_compound_store(Comp *c, const char *recv,
-				  char fields[][STGE_NAME_MAX], int n)
+				  char **fields, int n)
 {
 	const char *op = compound_name(c);
 	FieldKind fk;
@@ -6840,8 +7212,9 @@ static void compile_compound_store(Comp *c, const char *recv,
 static bool compile_assign(Comp *c)
 {
 	char name[STGE_NAME_MAX];
-	char fields[STGE_MAX_PATH][STGE_NAME_MAX];
+	char **fields = NULL;
 	int n = 0;
+	int fields_cap = 0;
 	Lex saved_lex;
 	Tok saved_tok;
 
@@ -6861,23 +7234,29 @@ static bool compile_assign(Comp *c)
 		return false;
 	}
 
-	while (at(c, TOK_DOT) && n < STGE_MAX_PATH)
+	while (at(c, TOK_DOT))
 	{
 		advance(c);
 		if (!at(c, TOK_IDENT))
 		{
+			free(fields);
 			lex_keep_buf(&c->lex, &saved_lex);
 			c->tok = saved_tok;
 			return false;
 		}
 
-		tok_copy(fields[n], sizeof fields[0], &c->tok);
-		n++;
+		if (!path_push(c, &fields, &n, &fields_cap, tok_cstr(c, &c->tok)))
+		{
+			free(fields);
+			fail(c, "out of memory");
+			return false;
+		}
 		advance(c);
 	}
 
 	if (n == 0 || (!at(c, TOK_EQUAL) && !at(c, TOK_LBRACK) && !at_compound(c)))
 	{
+		free(fields);
 		lex_keep_buf(&c->lex, &saved_lex);
 		c->tok = saved_tok;
 		return false;
@@ -6886,6 +7265,7 @@ static bool compile_assign(Comp *c)
 	if (at_compound(c))
 	{
 		compile_compound_store(c, name, fields, n);
+		free(fields);
 		return true;
 	}
 
@@ -6905,6 +7285,7 @@ static bool compile_assign(Comp *c)
 			if (node == NULL)
 			{
 				failf(c, "unknown node '%s'", name);
+				free(fields);
 				return true;
 			}
 
@@ -6915,9 +7296,13 @@ static bool compile_assign(Comp *c)
 			pc = compile_body(c, &has_arg);
 			c->self = saved_self;
 			if (c->failed)
+			{
+				free(fields);
 				return true;
+			}
 
 			store_fn(c, node, fields[0], pc, has_arg);
+			free(fields);
 			return true;
 		}
 
@@ -6926,6 +7311,7 @@ static bool compile_assign(Comp *c)
 	}
 
 	compile_store_chain(c, name, fields, n);
+	free(fields);
 	return true;
 }
 
@@ -7130,7 +7516,7 @@ static void compile_slot_stmt(Comp *c)
 	else if (c->expr_kind == EK_INT)
 	{
 		c->slot_kinds[slot] = FK_INT;
-		if (c->last_ret_type[0] != '\0')
+		if ((c->last_ret_type != NULL && c->last_ret_type[0] != '\0'))
 			set_slot_type(c, slot, c->last_ret_type);
 		else
 			set_slot_type(c, slot, "int");
@@ -7171,7 +7557,7 @@ static int compile_body_statement(Comp *c)
 			advance(c);
 			expect(c, TOK_EQUAL, "expected '='");
 			compile_expr(c);
-			if (strcmp(type, "object") != 0 && c->last_ret_type[0] != '\0'
+			if (strcmp(type, "object") != 0 && (c->last_ret_type != NULL && c->last_ret_type[0] != '\0')
 			    && strcmp(type, c->last_ret_type) != 0)
 			{
 				failf(c, "type mismatch: '%s' is not '%s'", c->last_ret_type, type);
@@ -7217,7 +7603,7 @@ static int compile_body_statement(Comp *c)
 			set_slot_type(c, slot, c->last_ret_type);
 		else if (c->expr_kind == EK_INT)
 			set_slot_type(c, slot,
-				      c->last_ret_type[0] != '\0' ? c->last_ret_type : "int");
+				      (c->last_ret_type != NULL && c->last_ret_type[0] != '\0') ? c->last_ret_type : "int");
 		emit_set_local(c, slot);
 		emit_u8(c, OP_POP);
 		return 0;
@@ -7386,10 +7772,11 @@ static int compile_body(Comp *c, bool *has_arg)
 {
 	size_t over;
 	int entry;
-	char saved_param[STGE_NAME_MAX];
+	char *saved_param = c->param;
 	bool saved_has = c->has_param;
 	int saved_self = c->self;
-	char saved_param_type[STGE_NAME_MAX];
+	char *saved_param_type = c->param_type;
+	char *saved_fn_ret = c->fn_ret_type;
 	int saved_locals = c->local_count;
 	int saved_slots = c->slot_count;
 	int saved_argc = c->fn_argc;
@@ -7397,17 +7784,15 @@ static int compile_body(Comp *c, bool *has_arg)
 	int *param_slots = NULL;
 	int param_slots_cap = 0;
 
-	memcpy(saved_param, c->param, sizeof saved_param);
-	memcpy(saved_param_type, c->param_type, sizeof saved_param_type);
 	c->has_param = false;
-	c->param[0] = '\0';
-	c->param_type[0] = '\0';
+	c->param = comp_strdup(c, "");
+	c->param_type = comp_strdup(c, "");
 	c->local_count = 0;
 	/* Keep outer/file-scope slots visible so nested writes use the same
 	   flat vm.locals indices (e.g. test_quit). Params/locals append after. */
 	c->fn_argc = 0;
 	c->fn_self_param = -1;
-	c->fn_ret_type[0] = '\0';
+	c->fn_ret_type = comp_strdup(c, "");
 
 	expect(c, TOK_LPAREN, "expected '('");
 	if (at(c, TOK_IDENT))
@@ -7524,12 +7909,12 @@ static int compile_body(Comp *c, bool *has_arg)
 
 			if (c->fn_argc == 0)
 			{
-				snprintf(c->param, sizeof c->param, "%s", pname);
-				snprintf(c->param_type, sizeof c->param_type, "%s",
+				set_str(&c->param, c, pname);
+				set_str(&c->param_type, c,
 					 type[0] != '\0' ? type
 					 : (c->fn_self_param == 0 && owner_name != NULL
 					    ? owner_name : ""));
-				c->has_param = c->param_type[0] != '\0';
+				c->has_param = (c->param_type != NULL && c->param_type[0] != '\0');
 			}
 
 			c->fn_argc++;
@@ -7562,13 +7947,7 @@ static int compile_body(Comp *c, bool *has_arg)
 			goto body_fail;
 		}
 
-		if (c->tok.len >= sizeof c->fn_ret_type)
-		{
-			fail(c, "return type name too long");
-			goto body_fail;
-		}
-
-		tok_copy(c->fn_ret_type, sizeof c->fn_ret_type, &c->tok);
+		c->fn_ret_type = comp_tok_name(c, &c->tok);
 		advance(c);
 		if (at(c, TOK_LBRACK))
 			take_brackets(c, false, NULL);
@@ -7640,11 +8019,12 @@ static int compile_body(Comp *c, bool *has_arg)
 		/* Drop function-only names from the table but keep slot indices
 		   reserved so later slots do not collide on shared vm locals. */
 		for (i = saved_slots; i < c->slot_count; i++)
-			c->slot_names[i][0] = '\0';
+			c->slot_names[i] = comp_strdup(c, "");
 
 		c->has_param = saved_has;
-		memcpy(c->param, saved_param, sizeof c->param);
-		memcpy(c->param_type, saved_param_type, sizeof c->param_type);
+		c->param = saved_param;
+		c->param_type = saved_param_type;
+		/* Keep fn_ret_type / fn_argc / fn_self_param for store_fn. */
 		c->local_count = saved_locals;
 		c->fn_argc = result_argc;
 		c->self = saved_self;
@@ -7658,11 +8038,12 @@ body_fail:
 		int i;
 
 		for (i = saved_slots; i < c->slot_count; i++)
-			c->slot_names[i][0] = '\0';
+			c->slot_names[i] = comp_strdup(c, "");
 	}
 	c->has_param = saved_has;
-	memcpy(c->param, saved_param, sizeof c->param);
-	memcpy(c->param_type, saved_param_type, sizeof c->param_type);
+	c->param = saved_param;
+	c->param_type = saved_param_type;
+	c->fn_ret_type = saved_fn_ret;
 	c->local_count = saved_locals;
 	c->fn_argc = saved_argc;
 	c->self = saved_self;
@@ -7687,11 +8068,7 @@ static void store_fn(Comp *c, NodeRef *node, const char *field, int pc, bool has
 			node->fns[i].argc = argc;
 			node->fns[i].self_param = self_param;
 			node->fns[i].is_extern = false;
-			if (ret_type != NULL && ret_type[0] != '\0')
-				snprintf(node->fns[i].ret_type, sizeof node->fns[i].ret_type,
-					 "%s", ret_type);
-			else
-				node->fns[i].ret_type[0] = '\0';
+			objfn_set_ret(&node->fns[i], ret_type);
 			patch_fn_calls(c, node->id, field, pc);
 			return;
 		}
@@ -7704,14 +8081,12 @@ static void store_fn(Comp *c, NodeRef *node, const char *field, int pc, bool has
 	}
 
 	memset(&node->fns[node->fn_count], 0, sizeof node->fns[0]);
-	memcpy(node->fns[node->fn_count].name, field, sizeof node->fns[0].name);
+	objfn_set_name(&node->fns[node->fn_count], field);
 	node->fns[node->fn_count].pc = pc;
 	node->fns[node->fn_count].has_arg = has_arg;
 	node->fns[node->fn_count].argc = argc;
 	node->fns[node->fn_count].self_param = self_param;
-	if (ret_type != NULL && ret_type[0] != '\0')
-		snprintf(node->fns[node->fn_count].ret_type,
-			 sizeof node->fns[node->fn_count].ret_type, "%s", ret_type);
+	objfn_set_ret(&node->fns[node->fn_count], ret_type);
 	node->fn_count++;
 	patch_fn_calls(c, node->id, field, pc);
 }
@@ -7798,8 +8173,8 @@ static void compile_enum(Comp *c, const char *qname)
 			{
 				if (strcmp(node->fields[i].name, member) == 0)
 				{
-					snprintf(node->fields[i].type, sizeof node->fields[i].type,
-						 "%s", qname);
+					free(node->fields[i].type);
+					node->fields[i].type = xstrdup(qname);
 					break;
 				}
 			}
@@ -8031,7 +8406,7 @@ static void compile_binding(Comp *c, const char *name)
 			set_slot_type(c, slot, c->last_ret_type);
 		else if (kind == EK_INT)
 			set_slot_type(c, slot,
-				      c->last_ret_type[0] != '\0' ? c->last_ret_type : "int");
+				      (c->last_ret_type != NULL && c->last_ret_type[0] != '\0') ? c->last_ret_type : "int");
 		emit_set_local(c, slot);
 		emit_u8(c, OP_POP);
 	}
@@ -8100,7 +8475,7 @@ static void bind_extern_fn(Comp *c, const char *owner, const char *fn,
 	}
 
 	memset(&node->fns[node->fn_count], 0, sizeof node->fns[0]);
-	memcpy(node->fns[node->fn_count].name, fn, sizeof node->fns[0].name);
+	objfn_set_name(&node->fns[node->fn_count], fn);
 	node->fns[node->fn_count].pc = -2;
 	node->fns[node->fn_count].has_arg = has_arg;
 	node->fns[node->fn_count].is_extern = true;
@@ -8325,21 +8700,31 @@ static void compile_field(Comp *c, const char *name)
 
 	if (at(c, TOK_DOT))
 	{
-		char fields[STGE_MAX_PATH][STGE_NAME_MAX];
-		int n = 1;
+		char **fields = NULL;
+		int n = 0;
+		int fields_cap = 0;
 
-		memcpy(fields[0], field, sizeof fields[0]);
-		while (at(c, TOK_DOT) && n < STGE_MAX_PATH)
+		if (!path_push(c, &fields, &n, &fields_cap, field))
+		{
+			fail(c, "out of memory");
+			return;
+		}
+		while (at(c, TOK_DOT))
 		{
 			advance(c);
 			if (!at(c, TOK_IDENT))
 			{
+				free(fields);
 				fail(c, "expected a field");
 				return;
 			}
 
-			tok_copy(fields[n], sizeof fields[0], &c->tok);
-			n++;
+			if (!path_push(c, &fields, &n, &fields_cap, tok_cstr(c, &c->tok)))
+			{
+				free(fields);
+				fail(c, "out of memory");
+				return;
+			}
 			advance(c);
 		}
 
@@ -8354,10 +8739,12 @@ static void compile_field(Comp *c, const char *name)
 			expect(c, TOK_RPAREN, "expected ')'");
 			emit_u8(c, OP_DYN_ADD);
 			emit_u8(c, OP_POP);
+			free(fields);
 			return;
 		}
 
 		compile_store_chain(c, name, fields, n);
+		free(fields);
 		return;
 	}
 
@@ -8727,12 +9114,9 @@ bool parser_compile(const char *path)
 	compile_program(c);
 	free(c->lex.buf);
 	c->lex.buf = NULL;
+	free(c->lex.interp_depth);
+	c->lex.interp_depth = NULL;
 	lex_persist_free(&c->lex);
-	for (i = 0; i < c->used_count; i++)
-	{
-		free(c->used[i].path);
-		c->used[i].path = NULL;
-	}
 	free(src);
 
 	if (c->failed)

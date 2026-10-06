@@ -6,18 +6,16 @@
 
 #include "utils/dyn.h"
 
-#define STGE_NAME_MAX 32
-
 typedef struct
 {
-	char name[STGE_NAME_MAX];
+	char *name;
 	int pc;
 	bool has_arg;
 	int argc;
 	int self_param; /* 0 if first param is bare type-name self, else -1 */
 	bool is_extern;
 	int native_id;
-	char ret_type[STGE_NAME_MAX];
+	char *ret_type;
 } ObjFn;
 
 typedef struct
@@ -64,7 +62,7 @@ typedef struct
 typedef struct
 {
 	int id;
-	char name[STGE_NAME_MAX];
+	char *name;
 	MemberTable members;
 	int type_id; /* index into VmProg.types[]; for type objs equals own index */
 } Obj;

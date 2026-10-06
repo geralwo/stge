@@ -1,7 +1,72 @@
-use "byte.stge"
-use "int.stge"
-use "uint.stge"
-use "object.stge"
+version = 0
+
+byte = [1]
+byte::new = (byte n) -> byte {
+  return n
+}
+byte::to_str = extern stge_int_to_str(byte n) -> String
+byte.to_str = (byte) -> String {
+  return byte::to_str(byte)
+}
+
+int = byte[4]
+int::new = (int n) -> int {
+  return n
+}
+int::new = (uint u) -> int {
+  return u
+}
+int::to_str = extern stge_int_to_str(int n) -> String
+int.to_str = (int) -> String {
+  return int::to_str(int)
+}
+
+uint = byte[4]
+uint::new = (uint n) -> uint {
+  return n
+}
+uint::new = (int n) -> uint {
+  return n
+}
+uint::to_str = extern stge_int_to_str(uint n) -> String
+uint.to_str = (uint) -> String {
+  return uint::to_str(uint)
+}
+
+int64 = byte[8]
+int64::new = (int64 n) -> int64 {
+  return n
+}
+int64::new = (uint64 u) -> int64 {
+  return u
+}
+int64::to_str = extern stge_int64_to_str(int64 n) -> String
+int64.to_str = (int64) -> String {
+  return int64::to_str(int64)
+}
+
+uint64 = byte[8]
+uint64::new = (uint64 n) -> uint64 {
+  return n
+}
+uint64::new = (int64 n) -> uint64 {
+  return n
+}
+uint64::to_str = extern stge_uint64_to_str(uint64 n) -> String
+uint64.to_str = (uint64) -> String {
+  return uint64::to_str(uint64)
+}
+
+object = {}
+object::get_type = extern stge_object_get_type(object o) -> int
+object.type = (object) -> int {
+  return object::get_type(object)
+}
+object::get_id = extern stge_object_get_id(object o) -> int
+object.id = (object) -> int {
+  return object::get_id(object)
+}
+
 use "input.stge"
 use "std.stge"
 use "string.stge"

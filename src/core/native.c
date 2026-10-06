@@ -1,3 +1,4 @@
+#include <stdlib.h>
 #include <string.h>
 
 #include "core/native.h"
@@ -8,17 +9,60 @@ typedef struct
 	StgeNativeFn fn;
 } NativeEntry;
 
-static NativeEntry natives[STGE_MAX_NATIVES];
+static NativeEntry *natives;
 static int native_count;
-static const char *host_types[STGE_MAX_HOST_TYPES];
+static int natives_cap;
+static const char **host_types;
 static int host_type_count;
+static int host_types_cap;
 
 void stge_native_clear(void)
 {
+	free(natives);
+	natives = NULL;
 	native_count = 0;
+	natives_cap = 0;
+	free(host_types);
+	host_types = NULL;
 	host_type_count = 0;
-	memset(natives, 0, sizeof natives);
-	memset(host_types, 0, sizeof host_types);
+	host_types_cap = 0;
+}
+
+static bool ensure_natives_cap(void)
+{
+	NativeEntry *grown;
+	int ncap;
+
+	if (native_count < natives_cap)
+		return true;
+
+	ncap = natives_cap > 0 ? natives_cap * 2 : 16;
+	grown = realloc(natives, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + natives_cap, 0, (size_t)(ncap - natives_cap) * sizeof *grown);
+	natives = grown;
+	natives_cap = ncap;
+	return true;
+}
+
+static bool ensure_host_types_cap(void)
+{
+	const char **grown;
+	int ncap;
+
+	if (host_type_count < host_types_cap)
+		return true;
+
+	ncap = host_types_cap > 0 ? host_types_cap * 2 : 8;
+	grown = realloc(host_types, (size_t)ncap * sizeof *grown);
+	if (grown == NULL)
+		return false;
+	memset(grown + host_types_cap, 0,
+	       (size_t)(ncap - host_types_cap) * sizeof *grown);
+	host_types = grown;
+	host_types_cap = ncap;
+	return true;
 }
 
 bool stge_native_add(const char *name, StgeNativeFn fn)
@@ -29,7 +73,7 @@ bool stge_native_add(const char *name, StgeNativeFn fn)
 	if (stge_native_find(name) >= 0)
 		return false;
 
-	if (native_count >= STGE_MAX_NATIVES)
+	if (!ensure_natives_cap())
 		return false;
 
 	natives[native_count].name = name;
@@ -54,7 +98,7 @@ int stge_native_find(const char *name)
 	return -1;
 }
 
-int32_t stge_call_native(int native_id, int32_t *args, int argc)
+int64_t stge_call_native(int native_id, int64_t *args, int argc)
 {
 	if (native_id < 0 || native_id >= native_count || natives[native_id].fn == NULL)
 		return 0;
@@ -70,7 +114,7 @@ bool stge_host_type_add(const char *name)
 	if (stge_host_type_find(name) >= 0)
 		return false;
 
-	if (host_type_count >= STGE_MAX_HOST_TYPES)
+	if (!ensure_host_types_cap())
 		return false;
 
 	host_types[host_type_count++] = name;

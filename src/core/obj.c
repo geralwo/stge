@@ -65,22 +65,17 @@ void obj_init(Obj *obj, int id, const char *name)
 	memset(obj, 0, sizeof *obj);
 	obj->id = id;
 	obj->type_id = -1;
-
-	if (name != NULL)
-	{
-		size_t n = strlen(name);
-
-		if (n >= STGE_NAME_MAX)
-			n = STGE_NAME_MAX - 1;
-
-		memcpy(obj->name, name, n);
-		obj->name[n] = '\0';
-	}
+	obj->name = dup_str(name != NULL ? name : "");
 }
 
 void obj_members_free(Obj *obj)
 {
 	uint32_t i;
+
+	if (obj == NULL)
+		return;
+
+	/* obj->name is arena-backed via dup_str/stge_alloc */
 
 	if (obj->members.slots == NULL)
 		return;

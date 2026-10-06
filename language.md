@@ -88,7 +88,7 @@ Compiling a file is two passes over the same source. The first pass records type
 
 Top-level statements in a file become bytecode. When that bytecode runs is decided by the host program (the C runtime), not by STGE grammar.
 
-`src/lang/core/core.stge` is included automatically unless the file already defines `int`, `String`, or `std`. `use` paths are resolved relative to the file that contains the `use`. A file is included at most once. Includes nest up to 8 deep, and one compilation accepts up to 16 `use` files.
+`src/lang/core/core.stge` is included automatically unless the file already defines `int`, `String`, or `std`. `use` paths are resolved relative to the file that contains the `use`. A given path is processed at most once per compile pass (`use` is `#pragma once`-style: a second `use` of the same path is a no-op).
 
 ## Names
 
@@ -117,7 +117,7 @@ Heap types and packed (stack) types are different.
 
 ```
 Sprite = {}
-
+Sprite::new = (String s) -> Sprite {}
 Game = {
   Game.player = Sprite("@")
   Game.greet = () {
@@ -393,7 +393,7 @@ use "scripts/sprite.stge"
 use "vec.stge"
 ```
 
-`use` takes a plain string. Interpolation is not allowed. Absolute paths are used as written. Relative paths are tried next to the current file, then as given.
+`use` takes a plain string. Interpolation is not allowed. Absolute paths are used as written. Relative paths are tried next to the current file, then as given. The same resolved path is only loaded once in a pass; repeating `use` for it is ignored (like `#pragma once`).
 
 ## Strings and printing
 
@@ -426,10 +426,8 @@ Loaded through `core.stge`:
 
 | File            | Defines                                                       |
 | --------------- | ------------------------------------------------------------- |
-| `byte.stge`     | `byte`, `byte(n)`, `byte::to_str`                             |
-| `int.stge`      | `int`, `int(n)` from `int` or `uint`, `int::to_str`           |
-| `uint.stge`     | `uint`, `uint(n)` from `uint` or `int`, `uint::to_str`        |
-| `object.stge`   | `object`                                                      |
+| `number.stge`   | `byte`, `int`, `uint`, `int64`, `uint64` (ctors + `to_str`)   |
+| `object.stge`   | `object`, `object.type`, `object.id`                          |
 | `input.stge`    | `Input`, `Input::poll`, `Input::is_key_pressed`, `Input::Key` |
 | `std.stge`      | `std::write`                                                  |
 | `string.stge`   | `String`, `String::concat`, `to_str`                          |
@@ -456,11 +454,12 @@ int.to_str = (int) -> String {
 
 ## Limits
 
+Tables that used to be fixed-size (namespaces, packed types, natives, string
+interns, `use` lists, call patches, field metadata, and so on) grow as needed.
+Object and function names are heap/arena strings (no 32-character truncate).
 
-| Limit              | Value |
-| ------------------ | ----- |
-| `use` files        | 16    |
-| Nested includes    | 8     |
-| Nested `${}` holes | 8     |
-
+`use` has no count limit: each path is recorded and skipped if seen again.
+Include nesting via `load` / nested include is limited only by **cycle
+detection** (re-entering a path already on the include stack fails). `${}`
+interpolation depth and dot-chain field paths also grow with use.
 

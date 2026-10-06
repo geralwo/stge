@@ -3,6 +3,9 @@ Terminal::stdin = int(0)
 Terminal::stdout = int(1)
 Terminal::stderr = int(2)
 
+//Terminal::width = extern stge_terminal_width() -> int
+//Terminal::height = extern stge_terminal_height() -> int
+
 Terminal::Color = enum {
   DEFAULT = -1
   BLACK
@@ -60,4 +63,8 @@ Terminal::print_at = (int x, int y, String s) {
   col = x + 1
   Terminal::print("\e[${row};${col}H")
   Terminal::print(s)
+}
+
+Terminal::clear = () {
+  Terminal::print("\e[2J")
 }

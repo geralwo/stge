@@ -4,14 +4,11 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-#define STGE_MAX_NATIVES 64
-#define STGE_MAX_HOST_TYPES 16
-
-typedef int32_t (*StgeNativeFn)(int32_t *args, int argc);
+typedef int64_t (*StgeNativeFn)(int64_t *args, int argc);
 
 bool stge_native_add(const char *name, StgeNativeFn fn);
 int stge_native_find(const char *name);
-int32_t stge_call_native(int native_id, int32_t *args, int argc);
+int64_t stge_call_native(int native_id, int64_t *args, int argc);
 void stge_native_clear(void);
 
 bool stge_host_type_add(const char *name);

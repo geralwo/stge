@@ -15,6 +15,8 @@ StgeString stge_string_new();
 StgeString stge_string_new_from_cstr(const char *cstr);
 StgeString stge_string_new_from_int(int32_t value);
 StgeString stge_string_new_from_uint(uint32_t value);
+StgeString stge_string_new_from_int64(int64_t value);
+StgeString stge_string_new_from_uint64(uint64_t value);
 StgeString stge_string_new_from_float(float value);
 StgeString stge_string_new_from_double(double value);
 StgeString stge_string_new_from_bool(bool value);

@@ -1,13 +1,11 @@
 use "test_object.stge"
-Terminal::print(1337.to_str())
-Terminal::print("\n")
-test_num = 23
-Terminal::print(test_num.to_str())
-Terminal::print("\n")
-Terminal::print("Hello World\n")
+Terminal::print("stge version: ${version.to_str()}\n")
 test_quit = 0
 
 player = {
+    player.char = "@"
+    player.pos = vec2i(0, 0)
+    player.vel = vec2i(0, 0)
     player.up = Input::Key.KEY_W
     player.down = Input::Key.KEY_S
     player.left = Input::Key.KEY_A
@@ -15,16 +13,16 @@ player = {
     player.exit = Input::Key.KEY_Q
     player.move = () {
         if Input::is_key_pressed(player.up) {
-            Terminal::print("Up\n")
+            player.pos.y -= 1
         }
         if Input::is_key_pressed(player.down) {
-            Terminal::print("Down\n")
+            player.pos.y += 1
         }
         if Input::is_key_pressed(player.left) {
-            Terminal::print("Left\n")
+            player.pos.x -= 1
         }
         if Input::is_key_pressed(player.right) {
-            Terminal::print("Right\n")
+            player.pos.x += 1
         }
         if Input::is_key_pressed(player.exit) {
             Terminal::print("Exit ${int::to_str(test_quit)}\n")
@@ -36,6 +34,8 @@ player = {
 
 
 while not test_quit {
+    Terminal::clear()
     Input::poll()
     player.move()
+    Terminal::print_at(player.pos.x, player.pos.y, player.char)
 }

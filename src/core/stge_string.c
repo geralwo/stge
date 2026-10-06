@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <inttypes.h>
 
 #include "core/stge_string.h"
 
@@ -52,6 +53,22 @@ StgeString stge_string_new_from_uint(uint32_t value)
 	char buf[16];
 
 	snprintf(buf, sizeof buf, "%u", (unsigned)value);
+	return stge_string_new_from_cstr(buf);
+}
+
+StgeString stge_string_new_from_int64(int64_t value)
+{
+	char buf[32];
+
+	snprintf(buf, sizeof buf, "%" PRId64, value);
+	return stge_string_new_from_cstr(buf);
+}
+
+StgeString stge_string_new_from_uint64(uint64_t value)
+{
+	char buf[32];
+
+	snprintf(buf, sizeof buf, "%" PRIu64, value);
 	return stge_string_new_from_cstr(buf);
 }
 

@@ -18,7 +18,6 @@
 #define STGE_TICKRATE 60
 #define STGE_SPATIAL_TILE 8
 #define STGE_SPATIAL_BUCKETS 64
-#define STGE_MAX_STRS 256
 #define STGE_CODE_START 1024
 #define STGE_ARENA_BLOCK 8192
 #define STGE_OBJS_INIT 64
@@ -59,9 +58,10 @@ typedef struct
 	Obj **objs; /* instance heap */
 	int object_count;
 	int objs_cap;
-	char *strs[STGE_MAX_STRS];
-	int wrap_id[STGE_MAX_STRS];
+	char **strs;
+	int *wrap_id;
 	int str_count;
+	int strs_cap;
 	uint8_t *code;
 	size_t code_len;
 	size_t code_cap;
@@ -151,6 +151,8 @@ void stge_string_clear(int id);
 bool stge_string_append_bytes(int id, const uint8_t *bytes, uint32_t n);
 bool stge_string_append_obj(int dst, int src);
 bool stge_string_set_from_int(int id, int32_t n);
+bool stge_string_set_from_int64(int id, int64_t n);
+bool stge_string_set_from_uint64(int id, uint64_t n);
 void stge_write(int fd, const void *buf, uint32_t count);
 const void *stge_mem_data(int id, const char *name);
 bool stge_dyn_copy(int dst, const char *dname, int src, const char *sname);

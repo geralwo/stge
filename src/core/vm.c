@@ -1119,9 +1119,9 @@ static int64_t vm_call(int pc, int self, const int64_t *args, int argc)
 		{
 			int native = fetch_u8(&vm);
 			uint16_t argc = fetch_u16(&vm);
-			int32_t *nargs = NULL;
+			int64_t *nargs = NULL;
 			int i;
-			int32_t result;
+			int64_t result;
 
 			if (argc > 0)
 			{
@@ -1132,7 +1132,7 @@ static int64_t vm_call(int pc, int self, const int64_t *args, int argc)
 					break;
 				}
 				for (i = (int)argc - 1; i >= 0; i--)
-					nargs[i] = stack_pop_i(&vm);
+					nargs[i] = stack_pop(&vm);
 			}
 
 			result = stge_call_native(native, nargs, (int)argc);

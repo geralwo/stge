@@ -157,12 +157,10 @@ bool vm_prog_init(VmProg *p)
 		p->code = NULL;
 		return false;
 	}
-	{
-		int i;
-
-		for (i = 0; i < STGE_MAX_STRS; i++)
-			p->wrap_id[i] = -1;
-	}
+	p->strs = NULL;
+	p->wrap_id = NULL;
+	p->str_count = 0;
+	p->strs_cap = 0;
 	return true;
 }
 
@@ -197,9 +195,12 @@ void vm_prog_reset(VmProg *p)
 			free(p->strs[i]);
 			p->strs[i] = NULL;
 		}
+		free(p->strs);
+		free(p->wrap_id);
+		p->strs = NULL;
+		p->wrap_id = NULL;
 		p->str_count = 0;
-		for (i = 0; i < STGE_MAX_STRS; i++)
-			p->wrap_id[i] = -1;
+		p->strs_cap = 0;
 	}
 	p->code_len = 0;
 	p->init_pc = -1;
@@ -819,8 +820,28 @@ int stge_intern_n(const char *s, size_t n)
 			return i;
 	}
 
-	if (scen->str_count >= STGE_MAX_STRS)
-		return -1;
+	if (scen->str_count >= scen->strs_cap)
+	{
+		int ncap = scen->strs_cap > 0 ? scen->strs_cap * 2 : 64;
+		char **grown_strs = realloc(scen->strs, (size_t)ncap * sizeof *grown_strs);
+		int *grown_wrap = realloc(scen->wrap_id, (size_t)ncap * sizeof *grown_wrap);
+		int j;
+
+		if (grown_strs == NULL || grown_wrap == NULL)
+		{
+			free(grown_strs == scen->strs ? NULL : grown_strs);
+			free(grown_wrap == scen->wrap_id ? NULL : grown_wrap);
+			return -1;
+		}
+		for (j = scen->strs_cap; j < ncap; j++)
+		{
+			grown_strs[j] = NULL;
+			grown_wrap[j] = -1;
+		}
+		scen->strs = grown_strs;
+		scen->wrap_id = grown_wrap;
+		scen->strs_cap = ncap;
+	}
 
 	copy = malloc(n + 1);
 	if (copy == NULL)
@@ -829,6 +850,7 @@ int stge_intern_n(const char *s, size_t n)
 	memcpy(copy, s, n);
 	copy[n] = '\0';
 	scen->strs[scen->str_count] = copy;
+	scen->wrap_id[scen->str_count] = -1;
 	return scen->str_count++;
 }
 
@@ -863,9 +885,6 @@ int stge_spawn(const char *name, const char *display)
 		name = "";
 
 	if (name[0] != '\0' && stge_find(name) >= 0)
-		return -1;
-
-	if (strlen(name) >= STGE_NAME_MAX)
 		return -1;
 
 	if (s->object_count >= s->objs_cap)
@@ -918,9 +937,6 @@ int stge_type_register(const char *name)
 	Obj *obj;
 
 	if (s == NULL || name == NULL || name[0] == '\0')
-		return -1;
-
-	if (strlen(name) >= STGE_NAME_MAX)
 		return -1;
 
 	if (stge_find(name) >= 0)
@@ -1081,6 +1097,30 @@ bool stge_string_set_from_int(int id, int32_t n)
 
 	stge_string_clear(id);
 	s = stge_string_new_from_int(n);
+	ok = stge_string_append_bytes(id, s.buffer, s.length);
+	free(s.buffer);
+	return ok;
+}
+
+bool stge_string_set_from_int64(int id, int64_t n)
+{
+	StgeString s;
+	bool ok;
+
+	stge_string_clear(id);
+	s = stge_string_new_from_int64(n);
+	ok = stge_string_append_bytes(id, s.buffer, s.length);
+	free(s.buffer);
+	return ok;
+}
+
+bool stge_string_set_from_uint64(int id, uint64_t n)
+{
+	StgeString s;
+	bool ok;
+
+	stge_string_clear(id);
+	s = stge_string_new_from_uint64(n);
 	ok = stge_string_append_bytes(id, s.buffer, s.length);
 	free(s.buffer);
 	return ok;
@@ -1390,7 +1430,7 @@ static int pixel_to_obj(Pixel p)
 	return id;
 }
 
-static int32_t screen_flush_native(int32_t *args, int argc){
+static int64_t screen_flush_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
@@ -1398,7 +1438,7 @@ static int32_t screen_flush_native(int32_t *args, int argc){
 	return 0;
 }
 
-static int32_t screen_clear_native(int32_t *args, int argc){
+static int64_t screen_clear_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
@@ -1406,7 +1446,7 @@ static int32_t screen_clear_native(int32_t *args, int argc){
 	return 0;
 }
 
-static int32_t screen_size_native(int32_t *args, int argc){
+static int64_t screen_size_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
@@ -1415,30 +1455,30 @@ static int32_t screen_size_native(int32_t *args, int argc){
 	return (int32_t)((uint32_t)size.x | ((uint32_t)size.y << 16));
 }
 
-static int32_t screen_buf_native(int32_t *args, int argc){
+static int64_t screen_buf_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
-	return (int32_t)(uintptr_t)screen_buf(&stge.screen);
+	return (int64_t)(uintptr_t)screen_buf(&stge.screen);
 }
 
-static int32_t screen_get_pixel_native(int32_t *args, int argc){
-	int32_t pos = (argc > 0) ? args[0] : 0;
+static int64_t screen_get_pixel_native(int64_t *args, int argc){
+	int32_t pos = (argc > 0) ? (int32_t)args[0] : 0;
 
 	return (int32_t)pixel_to_obj(screen_get_pixel(&stge.screen, vec2i_from_obj(pos)));
 }
 
-static int32_t screen_set_pixel_native(int32_t *args, int argc){
-	int32_t pos = (argc > 0) ? args[0] : 0;
-	int32_t pixel = (argc > 1) ? args[1] : 0;
+static int64_t screen_set_pixel_native(int64_t *args, int argc){
+	int32_t pos = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t pixel = (argc > 1) ? (int32_t)args[1] : 0;
 
 	screen_set_pixel(&stge.screen, vec2i_from_obj(pos), pixel_from_obj(pixel));
 	return 0;
 }
 
-static int32_t stge_string_append_char_native(int32_t *args, int argc){
-	int32_t id = (argc > 0) ? args[0] : 0;
-	int32_t ch = (argc > 1) ? args[1] : 0;
+static int64_t stge_string_append_char_native(int64_t *args, int argc){
+	int32_t id = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t ch = (argc > 1) ? (int32_t)args[1] : 0;
 
 	if (!valid_id(id))
 		return 0;
@@ -1449,17 +1489,17 @@ static int32_t stge_string_append_char_native(int32_t *args, int argc){
 	return id;
 }
 
-static int32_t stge_print_native(int32_t *args, int argc){
-	int32_t a = (argc > 0) ? args[0] : 0;
+static int64_t stge_print_native(int64_t *args, int argc){
+	int32_t a = (argc > 0) ? (int32_t)args[0] : 0;
 
 	stge_print(STGE_PRINT_STR, a);
 	return 0;
 }
 
-static int32_t stge_write_native(int32_t *args, int argc){
-	int32_t a = (argc > 0) ? args[0] : 0;
-	int32_t b = (argc > 1) ? args[1] : 0;
-	int32_t c = (argc > 2) ? args[2] : 0;
+static int64_t stge_write_native(int64_t *args, int argc){
+	int32_t a = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t b = (argc > 1) ? (int32_t)args[1] : 0;
+	int32_t c = (argc > 2) ? (int32_t)args[2] : 0;
 
 	stge_write((int)a, (const void *)(uintptr_t)(uint32_t)b, (uint32_t)c);
 	return 0;
@@ -1481,16 +1521,16 @@ static const uint8_t *string_obj_bytes(int id, uint32_t *n)
 	return (const uint8_t *)data;
 }
 
-static int32_t stge_string_new_native(int32_t *args, int argc){
+static int64_t stge_string_new_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
 	return string_obj_from_bytes(NULL, 0);
 }
 
-static int32_t stge_string_concat_native(int32_t *args, int argc){
-	int32_t a = (argc > 0) ? args[0] : 0;
-	int32_t b = (argc > 1) ? args[1] : 0;
+static int64_t stge_string_concat_native(int64_t *args, int argc){
+	int32_t a = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t b = (argc > 1) ? (int32_t)args[1] : 0;
 
 	int id;
 
@@ -1504,25 +1544,25 @@ static int32_t stge_string_concat_native(int32_t *args, int argc){
 	return id;
 }
 
-static int32_t stge_string_clear_native(int32_t *args, int argc){
-	int32_t id = (argc > 0) ? args[0] : 0;
+static int64_t stge_string_clear_native(int64_t *args, int argc){
+	int32_t id = (argc > 0) ? (int32_t)args[0] : 0;
 
 	stge_string_clear(id);
 	return id;
 }
 
-static int32_t stge_string_append_native(int32_t *args, int argc){
-	int32_t dst = (argc > 0) ? args[0] : 0;
-	int32_t src = (argc > 1) ? args[1] : 0;
+static int64_t stge_string_append_native(int64_t *args, int argc){
+	int32_t dst = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t src = (argc > 1) ? (int32_t)args[1] : 0;
 
 	if (!stge_string_append_obj(dst, src))
 		return -1;
 	return dst;
 }
 
-static int32_t stge_string_append_int_native(int32_t *args, int argc){
-	int32_t dst = (argc > 0) ? args[0] : 0;
-	int32_t n = (argc > 1) ? args[1] : 0;
+static int64_t stge_string_append_int_native(int64_t *args, int argc){
+	int32_t dst = (argc > 0) ? (int32_t)args[0] : 0;
+	int32_t n = (argc > 1) ? (int32_t)args[1] : 0;
 
 	StgeString s;
 	bool ok;
@@ -1533,8 +1573,8 @@ static int32_t stge_string_append_int_native(int32_t *args, int argc){
 	return ok ? dst : -1;
 }
 
-static int32_t stge_int_to_str_native(int32_t *args, int argc){
-	int32_t n = (argc > 0) ? args[0] : 0;
+static int64_t stge_int_to_str_native(int64_t *args, int argc){
+	int32_t n = (argc > 0) ? (int32_t)args[0] : 0;
 
 	int id;
 
@@ -1546,7 +1586,55 @@ static int32_t stge_int_to_str_native(int32_t *args, int argc){
 	return id;
 }
 
-static int32_t stge_input_poll_native(int32_t *args, int argc){
+static int64_t stge_int64_to_str_native(int64_t *args, int argc){
+	int64_t n = (argc > 0) ? args[0] : 0;
+	int id;
+
+	id = string_obj_from_bytes(NULL, 0);
+	if (id < 0)
+		return -1;
+	if (!stge_string_set_from_int64(id, n))
+		return -1;
+	return id;
+}
+
+static int64_t stge_uint64_to_str_native(int64_t *args, int argc){
+	uint64_t n = (argc > 0) ? (uint64_t)args[0] : 0;
+	int id;
+
+	id = string_obj_from_bytes(NULL, 0);
+	if (id < 0)
+		return -1;
+	if (!stge_string_set_from_uint64(id, n))
+		return -1;
+	return id;
+}
+
+static int64_t stge_object_get_id_native(int64_t *args, int argc){
+	int32_t id = (argc > 0) ? (int32_t)args[0] : -1;
+
+	if (!valid_heap_id(id))
+		return -1;
+	return id;
+}
+
+static int64_t stge_object_get_type_native(int64_t *args, int argc){
+	int32_t id = (argc > 0) ? (int32_t)args[0] : -1;
+	Obj *obj;
+	VmProg *s;
+
+	if (!valid_heap_id(id))
+		return -1;
+	obj = stge_obj(id);
+	if (obj == NULL || obj->type_id < 0)
+		return -1;
+	s = sc();
+	if (s == NULL || obj->type_id >= s->type_count)
+		return -1;
+	return stge_type_ref(obj->type_id);
+}
+
+static int64_t stge_input_poll_native(int64_t *args, int argc){
 	(void)args;
 	(void)argc;
 
@@ -1554,8 +1642,8 @@ static int32_t stge_input_poll_native(int32_t *args, int argc){
 	return input_poll(&stge.input) ? 1 : 0;
 }
 
-static int32_t stge_is_key_pressed_native(int32_t *args, int argc){
-	int32_t a = (argc > 0) ? args[0] : 0;
+static int64_t stge_is_key_pressed_native(int64_t *args, int argc){
+	int32_t a = (argc > 0) ? (int32_t)args[0] : 0;
 
 
 	/* Read the bitmap from the last Input::poll / OP_POLL; do not poll here
@@ -1581,6 +1669,10 @@ void stge_std_register(void)
 	stge_native_add("stge_print", stge_print_native);
 	stge_native_add("stge_write", stge_write_native);
 	stge_native_add("stge_int_to_str", stge_int_to_str_native);
+	stge_native_add("stge_int64_to_str", stge_int64_to_str_native);
+	stge_native_add("stge_uint64_to_str", stge_uint64_to_str_native);
+	stge_native_add("stge_object_get_id", stge_object_get_id_native);
+	stge_native_add("stge_object_get_type", stge_object_get_type_native);
 	stge_native_add("screen_flush", screen_flush_native);
 	stge_native_add("screen_clear", screen_clear_native);
 	stge_native_add("screen_size", screen_size_native);

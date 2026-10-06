@@ -1,8 +1,0 @@
-byte = [1]
-byte::new = (byte n) -> byte {
-  return n
-}
-byte::to_str = extern stge_int_to_str(byte n) -> String
-byte.to_str = () -> String {
-  return byte::to_str(byte)
-}
